@@ -5,10 +5,14 @@
 </p>
 
 <p align="center">
-  <b>Sync and batch-manage Chrome extensions across all local profiles on Windows via HKCU Group Policy — no admin privileges required, with native system tray, launch-at-startup &amp; background auto-sync.</b>
+  <b>Portable single-file Windows EXE (no Python required) · Sync &amp; batch-manage Chrome extensions across all local profiles via HKCU Group Policy · Instant Bilingual UI (EN/中文) · Native System Tray, Auto-Start &amp; Background Auto-Sync.</b>
 </p>
 
-![ExtKeeper UI Preview](docs/screenshot.png)
+<p align="center">
+  <a href="https://github.com/wsadan7-prog/ExtKeeper-Chrome-Extension-Sync/releases/latest"><b>⬇ Download Portable ExtKeeper.exe (Latest Release)</b></a>
+</p>
+
+![ExtKeeper English UI Preview](docs/screenshot_en.png)
 
 ---
 
@@ -26,50 +30,44 @@ When running multiple Chrome profiles on the same Windows machine (work, persona
 ## Key Features
 
 - **Dual-Channel Extension Management**
-  - **Channel A — Chrome Web Store Extensions**: Drop a `.crx`, pick a file, paste a Web Store URL / 32-char ID, or click any row in the matrix to apply `ExtensionInstallForcelist` (force-install across all profiles) or `ExtensionSettings` (`normal_installed`, auto-installed yet user-toggleable), or remove from policy in one click.
+  - **Channel A — Chrome Web Store Extensions**: Drop a `.crx`, browse a file, paste a Web Store URL / 32-char ID, or click any row in the matrix to apply `ExtensionInstallForcelist` (force-install across all profiles) or `ExtensionSettings` (`normal_installed`, auto-installed yet user-toggleable), or remove from policy in one click.
   - **Channel B — Local / Private Extensions**: Parses CRX2/CRX3 protobuf headers to extract extension IDs, unpacks to `packs\<ID>\`, enables `ExtensionInstallSources` (`file:///*`), and opens `chrome://extensions` **only for profiles still missing that extension**.
 - **Baseline Spread & Background Auto-Sync**
   - Pick any baseline profile (e.g. `Default`) and spread all of its Web Store extensions to every local profile in one click.
-  - Enable **Auto-Sync** (`自动同步`) to periodically scan the baseline profile every 60 seconds and incrementally add newly installed store extensions to policy (additive only — never deletes existing manual policies).
+  - Enable **Auto-Sync** to scan the baseline profile every 60 seconds and incrementally add newly installed store extensions to policy (additive only — never deletes existing manual policies).
 - **Launch at Startup & Start in Background (Zero-Dependency Native Tray)**
-  - **Auto-Start (`开机自启`)**: Registers `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\ExtKeeper` using `pythonw.exe --autostart` for silent, console-free startup without admin rights.
-  - **Start in Background (`默认后台`)**: Launches directly into the Windows system tray; clicking the window close button (`×`) hides to tray instead of exiting. Built directly on Win32 APIs via `ctypes` (no `pystray` or `pywin32` required).
+  - **Auto-Start**: Registers `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\ExtKeeper` for silent, console-free startup without admin rights (works for both `ExtKeeper.exe` and `.pyw`).
+  - **Start in Tray**: Launches directly into the Windows system tray; clicking the close button (`×`) hides to tray instead of exiting. Built directly on Win32 APIs via `ctypes` (no `pystray` or `pywin32` required).
   - **Single-Instance Activation**: Launching ExtKeeper again while it runs in the tray automatically brings the existing window to the foreground.
-- **Single-File & Zero Hard Dependencies**
-  - Everything lives in [extkeeper.pyw](extkeeper.pyw) using only the Python standard library (`tkinter`, `ctypes`, `winreg`, etc.). Drag-and-drop (`tkinterdnd2`) and runtime icon generation (`pillow`) are completely optional.
+- **Built-in Bilingual Interface (English / 简体中文)**
+  - Automatically follows your Windows UI language on first launch (English on non-Chinese Windows, Simplified Chinese on Chinese Windows).
+  - Click **`中文` / `EN`** at the top-right corner (or right-click the tray icon) to switch the entire UI, dialogs, tray menu, and logs instantly without restarting.
 
 ---
 
 ## Quick Start
 
-### Requirements
+### Option 1: Portable EXE (Recommended — No Python Required)
 
-- Windows 10 / 11
-- Python 3.8+ (with `tkinter` included)
+1. Download **`ExtKeeper.exe`** from the [Latest Release](https://github.com/wsadan7-prog/ExtKeeper-Chrome-Extension-Sync/releases/latest).
+2. Place it in any permanent folder (e.g., `D:\Tools\ExtKeeper\`) and double-click to run. Settings (`settings.json`), local pool (`local.json`), and unpacked extensions (`packs\`) are stored right next to `ExtKeeper.exe`.
 
-### Optional Dependencies (Recommended)
+### Option 2: Run from Source (Python 3.8+)
 
-ExtKeeper runs out of the box without third-party packages (clicking the drop zone opens a standard file picker). To enable drag-and-drop and dynamic multi-size icon generation:
+1. Install Python 3.8+ on Windows (with `tkinter` enabled).
+2. *(Optional)* Install drag-and-drop & icon helpers (app works without them):
+   ```bash
+   pip install -r requirements.txt
+   ```
+3. Double-click **`启动.bat`** or run `pythonw extkeeper.pyw`.
 
-```bash
-pip install -r requirements.txt
-```
-
-### Launching
-
-1. Double-click **`启动.bat`** (automatically locates `pythonw.exe` or `pyw.exe` and starts without a console window).
-2. Or launch via CLI:
-
-```bash
-pythonw extkeeper.pyw
-```
-
-Supported CLI flags (also forwarded by `启动.bat`):
+### CLI Flags (Supported by `ExtKeeper.exe` & `启动.bat`)
 
 | Flag | Behavior |
 | --- | --- |
 | `--background` / `--minimized` | Force silent launch into the Windows system tray |
 | `--show` | Force showing the main window on startup |
+| `--lang=en` / `--lang=zh` / `--lang=auto` | Override UI language (English / Chinese / Follow System) |
 | `--autostart` | Startup launcher flag (respects saved background preference) |
 
 ---
@@ -87,8 +85,8 @@ Splitting Store extensions (Channel A via HKCU Policy) from Private/Local `.crx`
 ### Good to Know
 
 - After updating policies, **fully exit Chrome (including its background tray icon)** and reopen it for changes to take effect.
-- Extensions added via **Force Install** show *"Managed by your organization"* and cannot be disabled individually; use **Normal Install (allow disable)** if you prefer toggleable auto-installs.
-- **One-Click Remove** unregisters the extension from policy so Chrome automatically uninstalls policy-managed copies on restart (previously manually installed copies may remain).
+- Extensions added via **Force-Install** show *"Managed by your organization"* and cannot be disabled individually; use **Auto-Install (Allow Disable)** if you prefer toggleable auto-installs.
+- **Remove from Policy** unregisters the extension so Chrome automatically uninstalls policy-managed copies on restart (previously manually installed copies may remain).
 
 ---
 
@@ -96,16 +94,17 @@ Splitting Store extensions (Channel A via HKCU Policy) from Private/Local `.crx`
 
 ```text
 .
-├── extkeeper.pyw       # Main application (UI, dual-channel sync, auto-start, native Win32 tray)
-├── 启动.bat            # Windows launcher script (console-free pythonw/pyw lookup + arg forwarding)
-├── extkeeper.ico       # Application window & system tray icon
-├── requirements.txt    # Optional dependencies (tkinterdnd2, pillow)
-├── README.md           # Chinese documentation
-├── README_EN.md        # English documentation
-├── 读我.txt            # Plain-text quick reference (Chinese)
-├── LICENSE             # MIT License
+├── extkeeper.pyw         # Main application (dual-channel sync, bilingual UI, auto-start, native tray)
+├── 启动.bat              # Windows source launcher (console-free pythonw/pyw lookup + arg forwarding)
+├── extkeeper.ico         # Application window & system tray icon
+├── requirements.txt      # Optional dependencies for source runs (tkinterdnd2, pillow)
+├── README.md             # Chinese documentation
+├── README_EN.md          # English documentation
+├── 读我.txt              # Plain-text quick reference (Chinese)
+├── LICENSE               # MIT License
 └── docs/
-    └── screenshot.png  # Anonymized UI preview screenshot
+    ├── screenshot.png    # Anonymized Chinese UI preview
+    └── screenshot_en.png # Anonymized English UI preview
 ```
 
 ---

@@ -1,31 +1,32 @@
 # -*- coding: utf-8 -*-
 """
 扩展管家 ExtKeeper —— Chrome 多配置文件扩展同步与批量管理助手
-商店扩展走 HKCU 组策略同步，本地扩展走解包与定向装载，支持开机自启、默认后台托盘驻留与自动同步。
+Multi-Profile Chrome Extension Sync & Policy Manager for Windows
 
-通道 A｜商店扩展
+通道 A｜商店扩展（Channel A — Chrome Web Store）
     写 HKCU\\Software\\Policies\\Google\\Chrome\\ExtensionInstallForcelist，
     不碰 Secure Preferences 的 HMAC 签名（那个每次 Chrome 升级都可能变，
     改坏了整个配置文件的扩展列表会被 Chrome 判废）。
 
-通道 B｜非商店扩展
+通道 B｜非商店扩展（Channel B — Local / Private CRX）
     两条路都堵死了，实测查证：
       · --load-extension 在 Chrome 137 被移除，142 连 DisableLoadExtensionCommandLineSwitch
         一起删了，158 上彻底无解；
       · 官方策略写明：非域 Windows 上，商店外的扩展不能强装
         （除非加入 AD / Azure AD / 注册 Chrome Enterprise Core）。
-    所以这里只能做成「半自动」：
+    所以这里做成「半自动」：
       1) 把 crx 解包到 packs\\<id>\\，同时留一份原 crx 在旁边；
       2) 写 ExtensionInstallSources 放开 file:// 来源（否则 Chrome 拒绝装商店外的包）；
       3) 点一下，只给「还缺这个扩展」的配置各开一个扩展页窗口，
-         你在每个窗口里把 packs\\<id>.crx 拖进去就行。
+         在每个窗口里把 packs\\<id>.crx 拖进去即可。
 
-后台与自启
+后台、自启与双语界面
     · 开机自启：写 HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\ExtKeeper，
       无需管理员权限，通过 pythonw.exe 静默拉起。
     · 默认后台：启动时隐藏到系统托盘，点击主窗关闭按钮缩进托盘而非退出；
       单实例互斥，重复打开会自动唤出已在后台运行的窗口。
     · 后台自动同步（可选）：按选定的基准配置定期检查新增商店扩展并增量同步到策略。
+    · 中英文双语界面：支持自动跟随系统语言与一键实时切换（简体中文 / English）。
 """
 
 import os
@@ -57,19 +58,24 @@ except Exception:
     DND_FILES = "DND_Files"
     TkinterDnD = None
 
-APP_TITLE = "扩展管家 ExtKeeper — Chrome 多配置扩展同步助手"
-APP_SHORT_TITLE = "扩展管家 ExtKeeper"
 APP_RUN_NAME = "ExtKeeper"
 MUTEX_NAME = "Local\\ExtKeeper_SingleInstance_Mutex"
 TRAY_WND_CLASS = "ExtKeeperTrayHostClass"
 TRAY_WND_TITLE = "ExtKeeperTrayHostWindow"
 SHOW_MSG_NAME = "ExtKeeper_ShowMainWindow_Msg"
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+IS_FROZEN = getattr(sys, "frozen", False)
+HERE = (
+    os.path.dirname(os.path.abspath(sys.executable))
+    if IS_FROZEN
+    else os.path.dirname(os.path.abspath(__file__))
+)
+BUNDLE_DIR = getattr(sys, "_MEIPASS", HERE)
 PACK_DIR = os.path.join(HERE, "packs")
 POOL_FILE = os.path.join(HERE, "local.json")
 SETTINGS_FILE = os.path.join(HERE, "settings.json")
 ICON_FILE = os.path.join(HERE, "extkeeper.ico")
+BUNDLED_ICON_FILE = os.path.join(BUNDLE_DIR, "extkeeper.ico")
 
 CHROME_DATA = os.path.join(os.environ.get("LOCALAPPDATA", ""), r"Google\Chrome\User Data")
 POLICY = r"Software\Policies\Google\Chrome"
@@ -89,7 +95,322 @@ DEFAULT_SETTINGS = {
     "start_in_background": False,
     "auto_sync": False,
     "sync_source": "",
+    "language": "auto",  # "auto" | "zh" | "en"
 }
+
+
+# ============================================================ 国际化（简体中文 / English）
+
+I18N = {
+    "zh": {
+        "app_title": "扩展管家 ExtKeeper — Chrome 多配置扩展同步助手",
+        "app_short": "扩展管家 ExtKeeper",
+        "h1": "扩展管家",
+        "subtitle": "　Chrome 扩展同步与策略管家",
+        "btn_refresh": "刷新",
+        "btn_lang_switch": "EN",
+        "bar_prefix": "以",
+        "bar_suffix": "为准，整套铺到全部",
+        "btn_spread": "铺开",
+        "chk_auto_sync": "自动同步",
+        "chk_builtin": "显示内置组件",
+        "btn_clear": "清空全部策略",
+        "left_title": "扩展一览",
+        "left_count": "共 %d 个",
+        "left_legend": "● 已装　○ 未装　·　单击选中　双击复制 ID",
+        "col_ext": "扩展",
+        "col_id": "ID",
+        "col_pol": "策略",
+        "tag_force": "强制",
+        "tag_normal": "可停",
+        "unlanded": "未落地 · ",
+        "drop_t1_dnd": "把 .crx 拖到这里",
+        "drop_t2_dnd": "或点击选择 · 也支持解包目录",
+        "drop_t1_click": "点击选择 .crx 扩展包",
+        "drop_t2_click": "安装 tkinterdnd2 可开启拖拽",
+        "drop_t3": "自动查商店，判定走 A 还是 B",
+        "btn_lookup": "识别",
+        "picked_empty": "还没选扩展 —— 拖入 / 点击选文件 / 点左侧行",
+        "picked_installed": "已装 %d / %d",
+        "unnamed": "（无名）",
+        "ch_a": "通道 A　商店扩展",
+        "btn_force": "① 强制装到所有配置",
+        "btn_normal": "② 装，但允许我自己停用",
+        "btn_remove": "③ 一键删除",
+        "ch_b": "通道 B　本地扩展",
+        "btn_local_del": "移除",
+        "btn_local_add": "④ 解包并登记",
+        "btn_open_pages": "⑤ 给还缺的配置开扩展页",
+        "log_title": "记录",
+        "chk_autostart": "开机自启",
+        "chk_bg_mode": "默认后台",
+        "btn_hide_tray": "最小化到托盘",
+        "pill_profiles": "%d 配置",
+        "pill_policies": "%d 策略",
+        "pill_missing": "%d 缺",
+        "pill_local": "%d 本地",
+        "pill_chrome_on": "Chrome 开",
+        "pill_chrome_off": "Chrome 关",
+        "tip_auto_sync_on": "自动同步开",
+        "kind_store": "商店",
+        "kind_local": "本地",
+        "kind_folder": "文件夹",
+        "kind_checking": "查商店中…",
+        "kind_failed": "查询失败",
+        "kind_policy_force": "策略·强制",
+        "kind_policy_normal": "策略·可停",
+        "kind_installed": "已装",
+        "kind_unknown": "未知",
+        "tray_show": "打开主界面",
+        "tray_hide": "隐藏主界面",
+        "tray_refresh": "立即刷新状态",
+        "tray_sync": "立即同步（%s）",
+        "tray_sync_none": "立即同步（未选基准）",
+        "tray_autostart": "开机自启",
+        "tray_bg_mode": "默认后台运行",
+        "tray_auto_sync": "后台自动同步",
+        "tray_lang_switch": "Switch to English",
+        "tray_quit": "退出扩展管家",
+        "notify_bg_started": "已在后台托盘启动，点击右下角图标可打开主界面。",
+        "notify_bg_hidden": "已收起到后台托盘运行，点击图标可随时打开，右键可退出。",
+        "notify_no_source": "未找到可用的基准配置，无法同步。",
+        "notify_sync_clean": "「%s」的扩展已全部同步，无需变更。",
+        "notify_sync_done": "已同步 %d 个新扩展（%s）",
+        "notify_restart_chrome": "，重启 Chrome 生效。",
+        "log_save_err": "保存设置失败：%s",
+        "log_autostart_on": "已开启开机自启（HKCU Run：%s）",
+        "log_autostart_off": "已关闭开机自启。",
+        "log_autostart_err": "设置开机自启失败：%s",
+        "log_bg_on": "已开启默认后台：下次启动直接进系统托盘，点关闭按钮也仅隐藏到托盘。",
+        "log_bg_off": "已关闭默认后台：下次启动直接显示主界面，点关闭按钮将退出程序。",
+        "log_auto_sync_on": "已开启后台自动同步：每分钟检查「%s」新增商店扩展并自动补齐策略。",
+        "log_auto_sync_off": "已关闭后台自动同步。",
+        "log_source_set": "基准配置已设为：%s（%s）",
+        "log_sync_clean": "检查完成：「%s」的商店扩展已全部在策略中。",
+        "log_sync_added": "自动同步：从「%s」补齐 %d 个商店扩展（%s）。",
+        "log_lang_changed": "界面语言已切换为：简体中文",
+        "log_copied_id": "已复制 ID：%s",
+        "log_picked": "识别到 %s  %s  [%s]",
+        "log_checking": "查商店…",
+        "log_not_in_store": "商店里没有 —— 走通道 B。",
+        "log_dropped": "拖入：%s",
+        "log_failed": "失败：%s",
+        "log_chrome_running": "Chrome 正开着 —— 请完全退出（含托盘）再打开才生效。",
+        "log_forced": "已强装 %s",
+        "log_normal": "已设为「自动装、可停用」：%s",
+        "log_removed": "已从策略撤掉 %s",
+        "log_removed_hint": "重启 Chrome 后，策略装上的会自动卸；原先手动装的可能留下。",
+        "log_cleared": "策略已清空。",
+        "log_spread": "已铺开 %d 个扩展。",
+        "log_unpacked": "已解包到 packs\\%s",
+        "log_allowed_src": "已放开 file:// 安装来源，以后拖 crx 进扩展页不会被拦。",
+        "log_unpack_err": "解包失败：%s",
+        "log_missing_profs": "还缺 %d 个配置：%s",
+        "log_drag_target": "拖这个：%s",
+        "log_local_removed": "已从池里移除 %s",
+        "etc_more": " 等",
+        "sep_list": "、",
+        "dlg_pick_title": "选择 Chrome 扩展安装包 (.crx)",
+        "dlg_crx_filter": "Chrome 扩展包",
+        "dlg_all_filter": "所有文件",
+        "dlg_autostart_err": "开机自启设置失败",
+        "dlg_no_source_title": "未选择基准配置",
+        "dlg_no_source_msg": "当前未检测到可用 Chrome 配置。",
+        "dlg_unrecognized": "没认出来",
+        "dlg_paste_hint": "粘贴商店页面链接，或 32 位扩展 ID",
+        "dlg_need_title": "先选一个",
+        "dlg_need_msg": "先把 .crx 拖进来，粘贴链接 / ID，或单击左侧列表中的扩展。",
+        "dlg_confirm": "确认",
+        "dlg_force_msg": "把 %s\n强制装进全部 %d 个配置？\n\n强制装的扩展界面上不能停用、不能卸载，会显示「由贵单位管理」。",
+        "dlg_clear_msg": "清空全部扩展策略？只动「强制安装 / 扩展设置 / 安装来源」三项。",
+        "dlg_spread_none_title": "没有可铺的",
+        "dlg_spread_none_msg": "这个配置里没有从商店装的扩展。",
+        "dlg_spread_msg": "把「%s」里的 %d 个商店扩展强制装进所有配置？\n\n%s",
+        "dlg_unpack_err_title": "解包失败",
+        "dlg_unpack_need_file": "这一条只能从 .crx 或文件夹来，光有 ID 解不了包",
+        "dlg_local_need_sel": "在本地扩展列表里选中一个扩展。",
+        "dlg_all_done_title": "齐了",
+        "dlg_all_done_msg": "所有配置都已经有这个扩展了。",
+        "dlg_opened_1_title": "开了 1 个窗口",
+        "dlg_opened_1_msg": "把下面这个拖进窗口里的扩展页：\n%s",
+        "dlg_opened_n_title": "开了 %d 个窗口",
+        "dlg_opened_n_msg": "每个窗口对应一个还缺它的配置。\n\n把下面这个，逐个拖进每个窗口的扩展页：\n%s\n\n同一个文件可以拖很多次。",
+        "dlg_local_del_msg": "从本地池移除 %s？\n（packs 里的文件保留，不会删）",
+        "err_unknown_file": "认不出来：只支持 .crx / 解包目录 / 商店链接 / 32 位 ID",
+        "dlg_startup_err": "启动失败",
+    },
+    "en": {
+        "app_title": "ExtKeeper — Multi-Profile Chrome Extension Sync & Manager",
+        "app_short": "ExtKeeper",
+        "h1": "ExtKeeper",
+        "subtitle": "  Chrome Extension Sync",
+        "btn_refresh": "Refresh",
+        "btn_lang_switch": "中文",
+        "bar_prefix": "Baseline",
+        "bar_suffix": "→ all profiles",
+        "btn_spread": "Spread All",
+        "chk_auto_sync": "Auto-Sync",
+        "chk_builtin": "Built-in",
+        "btn_clear": "Clear Policies",
+        "left_title": "Extensions",
+        "left_count": "%d total",
+        "left_legend": "● Installed  ○ Missing  ·  Click select · 2×Click copy ID",
+        "col_ext": "Extension",
+        "col_id": "ID",
+        "col_pol": "Policy",
+        "tag_force": "Force",
+        "tag_normal": "Normal",
+        "unlanded": "Pending · ",
+        "drop_t1_dnd": "Drop .crx file here",
+        "drop_t2_dnd": "Click to browse · Folder OK",
+        "drop_t1_click": "Click to select .crx package",
+        "drop_t2_click": "Install tkinterdnd2 for drag & drop",
+        "drop_t3": "Auto-detects Store vs. Local",
+        "btn_lookup": "Lookup",
+        "picked_empty": "No extension selected — drop, browse, or click a row",
+        "picked_installed": "Installed %d / %d",
+        "unnamed": "(Unnamed)",
+        "ch_a": "Channel A · Web Store",
+        "btn_force": "① Force-Install to All",
+        "btn_normal": "② Auto-Install (Allow Disable)",
+        "btn_remove": "③ Remove from Policy",
+        "ch_b": "Channel B · Local / Private",
+        "btn_local_del": "Del",
+        "btn_local_add": "④ Unpack & Register",
+        "btn_open_pages": "⑤ Open Pages for Missing",
+        "log_title": "Log",
+        "chk_autostart": "Auto-Start",
+        "chk_bg_mode": "Start in Tray",
+        "btn_hide_tray": "Hide to Tray",
+        "pill_profiles": "%d Profiles",
+        "pill_policies": "%d Policies",
+        "pill_missing": "%d Missing",
+        "pill_local": "%d Local",
+        "pill_chrome_on": "Chrome On",
+        "pill_chrome_off": "Chrome Off",
+        "tip_auto_sync_on": "Auto-Sync On",
+        "kind_store": "Store",
+        "kind_local": "Local",
+        "kind_folder": "Folder",
+        "kind_checking": "Checking…",
+        "kind_failed": "Lookup Failed",
+        "kind_policy_force": "Policy·Force",
+        "kind_policy_normal": "Policy·Normal",
+        "kind_installed": "Installed",
+        "kind_unknown": "Unknown",
+        "tray_show": "Open ExtKeeper",
+        "tray_hide": "Hide Window",
+        "tray_refresh": "Refresh Status",
+        "tray_sync": "Sync Now (%s)",
+        "tray_sync_none": "Sync Now (No Baseline)",
+        "tray_autostart": "Launch at Startup",
+        "tray_bg_mode": "Start in Background",
+        "tray_auto_sync": "Background Auto-Sync",
+        "tray_lang_switch": "切换为简体中文",
+        "tray_quit": "Exit ExtKeeper",
+        "notify_bg_started": "Running in the system tray. Click the tray icon to open.",
+        "notify_bg_hidden": "Minimized to the system tray. Click icon to open or right-click to exit.",
+        "notify_no_source": "No baseline profile available for sync.",
+        "notify_sync_clean": "All Web Store extensions in '%s' are already synced.",
+        "notify_sync_done": "Synced %d new extension(s) (%s)",
+        "notify_restart_chrome": ". Restart Chrome to apply.",
+        "log_save_err": "Failed to save settings: %s",
+        "log_autostart_on": "Auto-start enabled (HKCU Run: %s)",
+        "log_autostart_off": "Auto-start disabled.",
+        "log_autostart_err": "Failed to update auto-start: %s",
+        "log_bg_on": "Start in Tray enabled: launches silently into tray and hides on close.",
+        "log_bg_off": "Start in Tray disabled: shows window on launch and exits on close.",
+        "log_auto_sync_on": "Auto-Sync enabled: checking '%s' every minute for new Web Store extensions.",
+        "log_auto_sync_off": "Auto-Sync disabled.",
+        "log_source_set": "Baseline profile set to: %s (%s)",
+        "log_sync_clean": "Checked '%s': all Web Store extensions are already in policy.",
+        "log_sync_added": "Auto-Sync: added %d extension(s) from '%s' (%s).",
+        "log_lang_changed": "Interface language switched to: English",
+        "log_copied_id": "Copied ID: %s",
+        "log_picked": "Detected %s  %s  [%s]",
+        "log_checking": "Checking Chrome Web Store…",
+        "log_not_in_store": "Not found on Web Store — use Channel B.",
+        "log_dropped": "Loaded: %s",
+        "log_failed": "Error: %s",
+        "log_chrome_running": "Chrome is running — fully exit Chrome (including tray) and reopen to apply.",
+        "log_forced": "Force-installed: %s",
+        "log_normal": "Set to normal_installed (user toggleable): %s",
+        "log_removed": "Removed from policy: %s",
+        "log_removed_hint": "Policy-managed installs uninstall on next Chrome restart; manual installs may stay.",
+        "log_cleared": "All extension policies cleared.",
+        "log_spread": "Spread %d extension(s) to all profiles.",
+        "log_unpacked": "Unpacked to packs\\%s",
+        "log_allowed_src": "Allowed file:// install sources so Chrome accepts local .crx drops.",
+        "log_unpack_err": "Unpack failed: %s",
+        "log_missing_profs": "Missing in %d profile(s): %s",
+        "log_drag_target": "Drop this file: %s",
+        "log_local_removed": "Removed %s from local pool",
+        "etc_more": " etc.",
+        "sep_list": ", ",
+        "dlg_pick_title": "Select Chrome Extension Package (.crx)",
+        "dlg_crx_filter": "Chrome Extension",
+        "dlg_all_filter": "All Files",
+        "dlg_autostart_err": "Auto-Start Error",
+        "dlg_no_source_title": "No Baseline Profile",
+        "dlg_no_source_msg": "No available Chrome profiles detected.",
+        "dlg_unrecognized": "Unrecognized Input",
+        "dlg_paste_hint": "Paste a Chrome Web Store URL or a 32-character extension ID.",
+        "dlg_need_title": "Select an Extension",
+        "dlg_need_msg": "Drop a .crx file, paste a URL / ID, or click a row in the table first.",
+        "dlg_confirm": "Confirm",
+        "dlg_force_msg": "Force-install %s\ninto all %d Chrome profiles?\n\nForce-installed extensions cannot be disabled/removed manually and display 'Managed by your organization'.",
+        "dlg_clear_msg": "Clear all extension policies?\nOnly ExtensionInstallForcelist, ExtensionSettings, and ExtensionInstallSources will be removed.",
+        "dlg_spread_none_title": "Nothing to Spread",
+        "dlg_spread_none_msg": "This profile has no Chrome Web Store extensions.",
+        "dlg_spread_msg": "Force-install %d Web Store extension(s) from '%s' to all profiles?\n\n%s",
+        "dlg_unpack_err_title": "Unpack Failed",
+        "dlg_unpack_need_file": "Requires a .crx file or unpacked folder; an extension ID alone cannot be unpacked.",
+        "dlg_local_need_sel": "Select an extension from the local pool list first.",
+        "dlg_all_done_title": "All Set",
+        "dlg_all_done_msg": "All profiles already have this extension installed.",
+        "dlg_opened_1_title": "Opened 1 Window",
+        "dlg_opened_1_msg": "Drag and drop this file into the opened chrome://extensions page:\n%s",
+        "dlg_opened_n_title": "Opened %d Windows",
+        "dlg_opened_n_msg": "Each window corresponds to a profile missing this extension.\n\nDrag and drop this file into each extensions page:\n%s\n\nYou can drop the same file multiple times.",
+        "dlg_local_del_msg": "Remove %s from the local pool?\n(Files inside packs\\ will be kept)",
+        "err_unknown_file": "Unsupported input: only .crx, unpacked folder, Web Store URL, or 32-char ID.",
+        "dlg_startup_err": "Startup Failed",
+    },
+}
+
+
+def detect_system_lang():
+    """检测 Windows 系统界面语言：中文返回 'zh'，其他返回 'en'"""
+    try:
+        lang_id = ctypes.windll.kernel32.GetUserDefaultUILanguage()
+        # PRIMARYLANGID == 0x04 为中文（简体/繁体/港澳台新加坡）
+        return "zh" if (lang_id & 0x3FF) == 0x04 else "en"
+    except Exception:
+        return "zh"
+
+
+def resolve_lang(mode):
+    m = (mode or "auto").lower()
+    if m in ("zh", "en"):
+        return m
+    return detect_system_lang()
+
+
+def tr(lang, key, *args):
+    table = I18N.get(lang, I18N["zh"])
+    txt = table.get(key, I18N["zh"].get(key, key))
+    if args:
+        try:
+            return txt % args
+        except Exception:
+            return txt
+    return txt
+
+
+# 保持顶层常量兼容（按当前系统语言初始化，用于外部脚本或异常兜底）
+_BOOT_LANG = detect_system_lang()
+APP_TITLE = tr(_BOOT_LANG, "app_title")
+APP_SHORT_TITLE = tr(_BOOT_LANG, "app_short")
 
 
 # ============================================================ 配置持久化与开机自启
@@ -182,39 +503,34 @@ def set_autostart(enabled):
 # ============================================================ 应用图标生成
 
 def ensure_icon_file():
-    """确保程序图标 extkeeper.ico 存在（若可用 Pillow 则自动绘制精美多尺寸图标）"""
+    """确保程序图标 extkeeper.ico 存在（优先读取 exe 同目录或内嵌图标，缺失时自动绘制）"""
     if os.path.exists(ICON_FILE):
         return ICON_FILE
+    if os.path.exists(BUNDLED_ICON_FILE):
+        return BUNDLED_ICON_FILE
     try:
         from PIL import Image, ImageDraw
         size = 256
         img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         d = ImageDraw.Draw(img)
 
-        # 圆角蓝色底板
         pad = 14
         d.rounded_rectangle(
             (pad, pad, size - pad, size - pad),
             radius=54,
             fill=(37, 99, 235, 255),
         )
-        # 顶部微妙高光边
         d.rounded_rectangle(
             (pad + 6, pad + 6, size - pad - 6, size - pad - 6),
             radius=48,
             outline=(96, 165, 250, 140),
             width=4,
         )
-        # 中央抽象扩展拼图块（白底 + 右/上凸耳，简洁醒目，缩至 16x16 依然清晰）
         bx0, by0, bx1, by1 = 68, 86, 174, 192
         d.rounded_rectangle((bx0, by0, bx1, by1), radius=20, fill=(255, 255, 255, 255))
-        # 上凸耳
         d.ellipse((100, 56, 142, 98), fill=(255, 255, 255, 255))
-        # 右凸耳
         d.ellipse((158, 118, 200, 160), fill=(255, 255, 255, 255))
-        # 左凹槽（用主色挖空）
         d.ellipse((50, 118, 90, 158), fill=(37, 99, 235, 255))
-        # 右下角同步亮点（青绿色小圆点）
         d.ellipse((166, 166, 214, 214), fill=(16, 185, 129, 255),
                   outline=(255, 255, 255, 255), width=6)
 
@@ -234,7 +550,6 @@ kernel32 = ctypes.windll.kernel32
 LRESULT = ctypes.c_ssize_t
 WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM)
 
-# Win32 常量
 WM_NULL = 0x0000
 WM_DESTROY = 0x0002
 WM_CLOSE = 0x0010
@@ -267,7 +582,6 @@ TPM_RETURNCMD = 0x0100
 
 IMAGE_ICON = 1
 LR_LOADFROMFILE = 0x00000010
-LR_DEFAULTSIZE = 0x00000040
 IDI_APPLICATION = 32512
 ERROR_ALREADY_EXISTS = 183
 
@@ -331,7 +645,6 @@ class MSG(ctypes.Structure):
     ]
 
 
-# 显式声明 64 位安全的 Win32 API 签名
 kernel32.GetModuleHandleW.argtypes = [wt.LPCWSTR]
 kernel32.GetModuleHandleW.restype = wt.HMODULE
 kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wt.BOOL, wt.LPCWSTR]
@@ -416,7 +729,7 @@ def acquire_single_instance(wake_existing=True):
 
 
 class NativeTray:
-    """零第三方依赖的 Windows 原生系统托盘"""
+    """零第三方依赖的 Windows 原生系统托盘（支持中英文菜单）"""
 
     MENU_SHOW = 1001
     MENU_REFRESH = 1002
@@ -424,6 +737,7 @@ class NativeTray:
     MENU_AUTOSTART = 1004
     MENU_BG_MODE = 1005
     MENU_AUTO_SYNC = 1006
+    MENU_LANG = 1007
     MENU_QUIT = 1099
 
     def __init__(self, app, icon_path=""):
@@ -432,7 +746,7 @@ class NativeTray:
         self.hwnd = None
         self.hicon = None
         self._own_icon = False
-        self._tooltip = APP_TITLE
+        self._tooltip = APP_SHORT_TITLE
         self._ready = threading.Event()
         self._stopped = threading.Event()
         self._wndproc = WNDPROC(self._proc)
@@ -473,7 +787,7 @@ class NativeTray:
         nid.uFlags = flags
         nid.uCallbackMessage = WM_TRAYICON
         nid.hIcon = self.hicon
-        nid.szTip = (self._tooltip or APP_TITLE)[:127]
+        nid.szTip = (self._tooltip or APP_SHORT_TITLE)[:127]
         return nid
 
     def _add_icon(self):
@@ -489,7 +803,7 @@ class NativeTray:
         shell32.Shell_NotifyIconW(NIM_DELETE, ctypes.byref(nid))
 
     def set_tooltip(self, text):
-        self._tooltip = (text or APP_TITLE)[:127]
+        self._tooltip = (text or APP_SHORT_TITLE)[:127]
         if not self.hwnd or self._stopped.is_set():
             return
         try:
@@ -504,7 +818,7 @@ class NativeTray:
             return
         try:
             nid = self._make_nid(NIF_INFO)
-            nid.szInfoTitle = (title or APP_TITLE)[:63]
+            nid.szInfoTitle = (title or APP_SHORT_TITLE)[:63]
             nid.szInfo = (message or "")[:255]
             nid.dwInfoFlags = NIIF_INFO
             shell32.Shell_NotifyIconW(NIM_MODIFY, ctypes.byref(nid))
@@ -512,42 +826,47 @@ class NativeTray:
             pass
 
     def _show_menu(self):
-        state = self.app.get_tray_state()
+        st = self.app.get_tray_state()
+        lang = st["lang"]
         menu = user32.CreatePopupMenu()
         if not menu:
             return
         try:
-            show_label = "隐藏主界面" if state["visible"] else "打开主界面"
+            show_label = tr(lang, "tray_hide" if st["visible"] else "tray_show")
             user32.AppendMenuW(menu, MF_STRING, self.MENU_SHOW, show_label)
             user32.SetMenuDefaultItem(menu, self.MENU_SHOW, 0)
             user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
-            user32.AppendMenuW(menu, MF_STRING, self.MENU_REFRESH, "立即刷新状态")
-            sync_flag = MF_STRING if state["has_source"] else (MF_STRING | MF_GRAYED)
-            user32.AppendMenuW(
-                menu, sync_flag, self.MENU_SYNC_NOW,
-                "立即同步（%s）" % state["source_label"] if state["has_source"] else "立即同步（未选基准）"
+            user32.AppendMenuW(menu, MF_STRING, self.MENU_REFRESH, tr(lang, "tray_refresh"))
+            sync_flag = MF_STRING if st["has_source"] else (MF_STRING | MF_GRAYED)
+            sync_txt = (
+                tr(lang, "tray_sync", st["source_label"])
+                if st["has_source"]
+                else tr(lang, "tray_sync_none")
             )
+            user32.AppendMenuW(menu, sync_flag, self.MENU_SYNC_NOW, sync_txt)
             user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
             user32.AppendMenuW(
                 menu,
-                MF_STRING | (MF_CHECKED if state["autostart"] else 0),
+                MF_STRING | (MF_CHECKED if st["autostart"] else 0),
                 self.MENU_AUTOSTART,
-                "开机自启",
+                tr(lang, "tray_autostart"),
             )
             user32.AppendMenuW(
                 menu,
-                MF_STRING | (MF_CHECKED if state["start_in_bg"] else 0),
+                MF_STRING | (MF_CHECKED if st["start_in_bg"] else 0),
                 self.MENU_BG_MODE,
-                "默认后台运行",
+                tr(lang, "tray_bg_mode"),
             )
             user32.AppendMenuW(
                 menu,
-                MF_STRING | (MF_CHECKED if state["auto_sync"] else 0),
+                MF_STRING | (MF_CHECKED if st["auto_sync"] else 0),
                 self.MENU_AUTO_SYNC,
-                "后台自动同步",
+                tr(lang, "tray_auto_sync"),
             )
             user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
-            user32.AppendMenuW(menu, MF_STRING, self.MENU_QUIT, "退出扩展管家")
+            user32.AppendMenuW(menu, MF_STRING, self.MENU_LANG, tr(lang, "tray_lang_switch"))
+            user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
+            user32.AppendMenuW(menu, MF_STRING, self.MENU_QUIT, tr(lang, "tray_quit"))
 
             pt = POINT()
             user32.GetCursorPos(ctypes.byref(pt))
@@ -576,6 +895,8 @@ class NativeTray:
             self.app.call_ui(self.app.toggle_bg_from_tray)
         elif cmd == self.MENU_AUTO_SYNC:
             self.app.call_ui(self.app.toggle_auto_sync_from_tray)
+        elif cmd == self.MENU_LANG:
+            self.app.call_ui(self.app.toggle_language)
         elif cmd == self.MENU_QUIT:
             self.app.call_ui(self.app.quit_app)
 
@@ -681,7 +1002,7 @@ def read_crx(path):
     with open(path, "rb") as f:
         data = f.read()
     if data[:4] != b"Cr24":
-        raise ValueError("不是 CRX 文件（缺少 Cr24 头）")
+        raise ValueError("Invalid CRX file (missing Cr24 magic header)")
     ver = struct.unpack("<I", data[4:8])[0]
 
     if ver == 3:
@@ -695,7 +1016,7 @@ def read_crx(path):
                     if f2 == 1 and len(v2) == 16:
                         crx_id = v2
         if not crx_id:
-            raise ValueError("CRX3 头里没找到 crx_id")
+            raise ValueError("crx_id not found in CRX3 header")
         eid = id_from_bytes(crx_id)
     elif ver == 2:
         pklen = struct.unpack("<I", data[8:12])[0]
@@ -704,7 +1025,7 @@ def read_crx(path):
         payload = data[16 + pklen + siglen:]
         eid = id_from_bytes(hashlib.sha256(pubkey).digest()[:16])
     else:
-        raise ValueError("不认识的 CRX 版本：%d" % ver)
+        raise ValueError("Unsupported CRX version: %d" % ver)
 
     name = version = ""
     try:
@@ -722,7 +1043,7 @@ def read_crx(path):
 def read_folder(path):
     mf = os.path.join(path, "manifest.json")
     if not os.path.exists(mf):
-        raise ValueError("这个文件夹里没有 manifest.json")
+        raise ValueError("manifest.json not found in folder")
     with open(mf, encoding="utf-8-sig") as f:
         man = json.load(f)
     name = man.get("name", "") or ""
@@ -737,7 +1058,7 @@ def read_folder(path):
         if len(base) == 32 and all(c in IDCHARS for c in base):
             eid = base
     if not eid:
-        raise ValueError("读不出扩展 ID（manifest 没有 key，目录名也不是 ID）")
+        raise ValueError("Cannot derive extension ID (missing manifest key and folder name is not an ID)")
     return eid, name, version
 
 
@@ -1039,7 +1360,6 @@ def _fit_text(text, max_units):
     for ch in text:
         u = 2 if ord(ch) > 127 else 1
         if used + u > max_units:
-            # 为省略号留出空间
             while out and used + 1 > max_units:
                 last = out.pop()
                 used -= 2 if ord(last) > 127 else 1
@@ -1071,10 +1391,14 @@ F_MONO = ("Consolas", 9)
 
 
 class App:
-    def __init__(self, root, start_hidden=False, launched_by_autostart=False, icon_path=""):
+    def __init__(self, root, start_hidden=False, launched_by_autostart=False,
+                 icon_path="", lang_override=None):
         self.root = root
         self.icon_path = icon_path
         self.settings = load_settings()
+        self.lang_mode = lang_override or self.settings.get("language", "auto")
+        self.lang = resolve_lang(self.lang_mode)
+
         self.profiles = []
         self.ext_map = {}
         self.force = {}
@@ -1087,14 +1411,13 @@ class App:
         self._notified_tray_hide = False
         self._quitting = False
         self._query_seq = 0
-        self._last_sync_sig = None
 
         self.show_builtin = tk.BooleanVar(value=False)
         self.autostart_var = tk.BooleanVar(value=is_autostart_enabled())
         self.start_in_bg_var = tk.BooleanVar(value=bool(self.settings.get("start_in_background", False)))
         self.auto_sync_var = tk.BooleanVar(value=bool(self.settings.get("auto_sync", False)))
 
-        root.title(APP_TITLE)
+        root.title(self.t("app_title"))
         root.geometry("1180x900")
         root.minsize(1080, 880)
         root.configure(bg=C_BG)
@@ -1111,20 +1434,77 @@ class App:
         self.tray = NativeTray(self, icon_path=icon_path)
         self.tray.start()
 
+        self._apply_language(refresh_data=False)
         self.refresh()
 
         if self._hidden:
-            # 启动前保持隐藏，不闪主窗
             self.root.withdraw()
             if not launched_by_autostart:
-                self.tray.notify(
-                    APP_TITLE,
-                    "已在后台托盘启动，点击右下角图标可打开主界面。",
-                )
+                self.tray.notify(self.t("app_short"), self.t("notify_bg_started"))
         else:
             self.root.deiconify()
 
         self._schedule_polls()
+
+    # -------------------------------------------------- 语言与翻译
+
+    def t(self, key, *args):
+        return tr(self.lang, key, *args)
+
+    def set_language(self, mode, log_change=True):
+        """设置语言模式（'auto' / 'zh' / 'en'）并即时刷新全界面"""
+        self.lang_mode = mode if mode in ("auto", "zh", "en") else "auto"
+        self.lang = resolve_lang(self.lang_mode)
+        self._persist_settings()
+        self._apply_language(refresh_data=True)
+        if log_change:
+            self.log(self.t("log_lang_changed"))
+
+    def toggle_language(self):
+        """在简体中文与 English 之间一键切换"""
+        nxt = "en" if self.lang == "zh" else "zh"
+        self.set_language(nxt, log_change=True)
+
+    def _apply_language(self, refresh_data=True):
+        """将当前语言应用到窗口标题及所有静态/动态控件"""
+        self.root.title(self.t("app_title"))
+        self.h1_lb.configure(text=self.t("h1"))
+        self.sub_lb.configure(text=self.t("subtitle"))
+        self.refresh_btn.configure(text=self.t("btn_refresh"))
+        self.lang_btn.configure(text=self.t("btn_lang_switch"))
+
+        self.bar_pre_lb.configure(text=self.t("bar_prefix"))
+        self.bar_suf_lb.configure(text=self.t("bar_suffix"))
+        self.spread_btn.configure(text=self.t("btn_spread"))
+        self.auto_sync_chk.configure(text=self.t("chk_auto_sync"))
+        self.builtin_chk.configure(text=self.t("chk_builtin"))
+        self.clear_btn.configure(text=self.t("btn_clear"))
+
+        self.left_title_lb.configure(text=self.t("left_title"))
+        self.left_legend_lb.configure(text=self.t("left_legend"))
+        self.lookup_btn.configure(text=self.t("btn_lookup"))
+
+        self.ch_a_lb.configure(text=self.t("ch_a"))
+        self.force_btn.configure(text=self.t("btn_force"))
+        self.normal_btn.configure(text=self.t("btn_normal"))
+        self.remove_btn.configure(text=self.t("btn_remove"))
+
+        self.ch_b_lb.configure(text=self.t("ch_b"))
+        self.local_del_btn.configure(text=self.t("btn_local_del"))
+        self.local_add_btn.configure(text=self.t("btn_local_add"))
+        self.open_pages_btn.configure(text=self.t("btn_open_pages"))
+
+        self.log_title_lb.configure(text=self.t("log_title"))
+        self.autostart_chk.configure(text=self.t("chk_autostart"))
+        self.bg_mode_chk.configure(text=self.t("chk_bg_mode"))
+        self.hide_tray_btn.configure(text=self.t("btn_hide_tray"))
+
+        self._draw_drop()
+        self._render_pending()
+
+        if refresh_data:
+            self.render()
+            self.render_status()
 
     # -------------------------------------------------- 线程安全调度与托盘状态
 
@@ -1147,6 +1527,7 @@ class App:
             "auto_sync": bool(self.auto_sync_var.get()),
             "has_source": bool(src_dir),
             "source_label": src_name or src_dir,
+            "lang": self.lang,
         }
 
     def _current_source_profile(self):
@@ -1164,10 +1545,11 @@ class App:
         self.settings["start_in_background"] = bool(self.start_in_bg_var.get())
         self.settings["auto_sync"] = bool(self.auto_sync_var.get())
         self.settings["sync_source"] = src_dir
+        self.settings["language"] = self.lang_mode
         try:
             save_settings(self.settings)
         except Exception as e:
-            self.log("保存设置失败：%s" % e, "warn")
+            self.log(self.t("log_save_err", e), "warn")
 
     # -------------------------------------------------- 窗口显示 / 隐藏 / 退出
 
@@ -1192,10 +1574,7 @@ class App:
             pass
         if notify_first and not self._notified_tray_hide:
             self._notified_tray_hide = True
-            self.tray.notify(
-                APP_TITLE,
-                "已收起到后台托盘运行，点击图标可随时打开，右键可退出。",
-            )
+            self.tray.notify(self.t("app_short"), self.t("notify_bg_hidden"))
 
     def toggle_window(self):
         if self._hidden:
@@ -1233,20 +1612,20 @@ class App:
             actual = is_autostart_enabled()
             self.autostart_var.set(actual)
             if actual:
-                self.log("已开启开机自启（HKCU Run：%s）" % cmd)
+                self.log(self.t("log_autostart_on", cmd))
             else:
-                self.log("已关闭开机自启。")
+                self.log(self.t("log_autostart_off"))
         except Exception as e:
             self.autostart_var.set(is_autostart_enabled())
-            self.log("设置开机自启失败：%s" % e, "warn")
-            messagebox.showwarning("开机自启设置失败", str(e))
+            self.log(self.t("log_autostart_err", e), "warn")
+            messagebox.showwarning(self.t("dlg_autostart_err"), str(e))
 
     def on_toggle_bg_mode(self):
         self._persist_settings()
         if self.start_in_bg_var.get():
-            self.log("已开启默认后台：下次启动直接进系统托盘，点关闭按钮也仅隐藏到托盘。")
+            self.log(self.t("log_bg_on"))
         else:
-            self.log("已关闭默认后台：下次启动直接显示主界面，点关闭按钮将退出程序。")
+            self.log(self.t("log_bg_off"))
 
     def on_toggle_auto_sync(self):
         self._persist_settings()
@@ -1255,12 +1634,12 @@ class App:
             if not src_dir:
                 self.auto_sync_var.set(False)
                 self._persist_settings()
-                messagebox.showinfo("未选择基准配置", "当前未检测到可用 Chrome 配置。")
+                messagebox.showinfo(self.t("dlg_no_source_title"), self.t("dlg_no_source_msg"))
                 return
-            self.log("已开启后台自动同步：每分钟检查「%s」新增商店扩展并自动补齐策略。" % src_name)
+            self.log(self.t("log_auto_sync_on", src_name))
             self.sync_from_source(interactive=False)
         else:
-            self.log("已关闭后台自动同步。")
+            self.log(self.t("log_auto_sync_off"))
 
     def toggle_autostart_from_tray(self):
         self.autostart_var.set(not self.autostart_var.get())
@@ -1278,7 +1657,7 @@ class App:
         self._persist_settings()
         src_dir, src_name = self._current_source_profile()
         if src_dir:
-            self.log("基准配置已设为：%s（%s）" % (src_name, src_dir))
+            self.log(self.t("log_source_set", src_name, src_dir))
 
     def _schedule_polls(self):
         if self._quitting:
@@ -1290,7 +1669,6 @@ class App:
         if self._quitting:
             return
         try:
-            # 仅在主窗口可见时完整重绘；隐藏时只轻刷托盘提示
             if not self._hidden:
                 self.render_status()
             else:
@@ -1314,7 +1692,7 @@ class App:
         src_dir, src_name = self._current_source_profile()
         if not src_dir:
             if interactive:
-                self.tray.notify(APP_TITLE, "未找到可用的基准配置，无法同步。")
+                self.tray.notify(self.t("app_short"), self.t("notify_no_source"))
             return 0
         exts = read_extensions(src_dir)
         store_ids = [e for e, i in exts.items() if i.get("location") == 1]
@@ -1323,22 +1701,25 @@ class App:
         missing = [e for e in store_ids if e not in cur_force and e not in cur_extset]
         if not missing:
             if interactive:
-                self.log("检查完成：「%s」的商店扩展已全部在策略中。" % src_name)
+                self.log(self.t("log_sync_clean", src_name))
                 if self._hidden:
-                    self.tray.notify(APP_TITLE, "「%s」的扩展已全部同步，无需变更。" % src_name)
+                    self.tray.notify(self.t("app_short"), self.t("notify_sync_clean", src_name))
             return 0
 
         new_ids = list(cur_force.keys()) + missing
         write_forcelist(new_ids)
         names = [exts[e]["name"] for e in missing[:3]]
-        summary = "、".join(names) + (" 等" if len(missing) > 3 else "")
-        self.log("自动同步：从「%s」补齐 %d 个商店扩展（%s）。" % (src_name, len(missing), summary))
+        summary = self.t("sep_list").join(names) + (self.t("etc_more") if len(missing) > 3 else "")
+        if self.lang == "en":
+            self.log(self.t("log_sync_added", len(missing), src_name, summary))
+        else:
+            self.log(self.t("log_sync_added", src_name, len(missing), summary))
         self.refresh()
         if self._hidden or interactive:
-            tip = "已同步 %d 个新扩展（%s）" % (len(missing), summary)
+            tip = self.t("notify_sync_done", len(missing), summary)
             if chrome_running():
-                tip += "，重启 Chrome 生效。"
-            self.tray.notify(APP_TITLE, tip)
+                tip += self.t("notify_restart_chrome")
+            self.tray.notify(self.t("app_short"), tip)
         return len(missing)
 
     # -------------------------------------------------- 样式与布局
@@ -1420,39 +1801,49 @@ class App:
 
         head = tk.Frame(outer, bg=C_BG)
         head.pack(fill="x")
-        tk.Label(head, text="扩展管家", bg=C_BG, fg=C_TEXT, font=F_H1).pack(side="left")
-        tk.Label(head, text="　Chrome 扩展同步与批量管理助手", bg=C_BG, fg=C_MUTED,
-                 font=F_SMALL).pack(side="left", pady=(5, 0))
+        self.h1_lb = tk.Label(head, text="", bg=C_BG, fg=C_TEXT, font=F_H1)
+        self.h1_lb.pack(side="left")
+        self.sub_lb = tk.Label(head, text="", bg=C_BG, fg=C_MUTED, font=F_SMALL)
+        self.sub_lb.pack(side="left", pady=(5, 0))
         self.ver_lb = tk.Label(head, text="", bg=C_BG, fg=C_FAINT,
                                font=("Microsoft YaHei UI", 8))
         self.ver_lb.pack(side="left", padx=(10, 0), pady=(6, 0))
-        ttk.Button(head, text="刷新", style="Ghost.TButton",
-                   command=self.refresh).pack(side="right")
+        self.lang_btn = ttk.Button(head, text="", style="Ghost.TButton", width=4,
+                                   command=self.toggle_language)
+        self.lang_btn.pack(side="right", padx=(2, 0))
+        self.refresh_btn = ttk.Button(head, text="", style="Ghost.TButton", width=7,
+                                      command=self.refresh)
+        self.refresh_btn.pack(side="right")
         self.pill = tk.Label(head, text="", bg="#E8F5EE", fg=C_GREEN, font=F_SMALL,
-                             padx=10, pady=4)
-        self.pill.pack(side="right", padx=(0, 12), pady=(2, 0))
+                             padx=9, pady=4)
+        self.pill.pack(side="right", padx=(0, 8), pady=(2, 0))
 
         bar = tk.Frame(outer, bg=C_BG)
         bar.pack(fill="x", pady=(10, 10))
-        tk.Label(bar, text="以", bg=C_BG, fg=C_MUTED, font=F_SMALL).pack(side="left")
+        self.bar_pre_lb = tk.Label(bar, text="", bg=C_BG, fg=C_MUTED, font=F_SMALL)
+        self.bar_pre_lb.pack(side="left")
         self.src_box = ttk.Combobox(bar, state="readonly", width=20, font=F_SMALL)
         self.src_box.pack(side="left", padx=5)
         self.src_box.bind("<<ComboboxSelected>>", self.on_source_changed)
-        tk.Label(bar, text="为准，整套铺到全部", bg=C_BG, fg=C_MUTED,
-                 font=F_SMALL).pack(side="left")
-        ttk.Button(bar, text="铺开", command=self.do_spread).pack(side="left", padx=6)
-        ttk.Checkbutton(bar, text="自动同步", variable=self.auto_sync_var,
-                        command=self.on_toggle_auto_sync).pack(side="left", padx=(6, 0))
-        ttk.Checkbutton(bar, text="显示内置组件", variable=self.show_builtin,
-                        command=self.render).pack(side="left", padx=(10, 0))
-        ttk.Button(bar, text="清空全部策略", style="Danger.TButton",
-                   command=self.do_clear).pack(side="right")
+        self.bar_suf_lb = tk.Label(bar, text="", bg=C_BG, fg=C_MUTED, font=F_SMALL)
+        self.bar_suf_lb.pack(side="left")
+        self.spread_btn = ttk.Button(bar, text="", command=self.do_spread)
+        self.spread_btn.pack(side="left", padx=6)
+        self.auto_sync_chk = ttk.Checkbutton(bar, text="", variable=self.auto_sync_var,
+                                             command=self.on_toggle_auto_sync)
+        self.auto_sync_chk.pack(side="left", padx=(6, 0))
+        self.builtin_chk = ttk.Checkbutton(bar, text="", variable=self.show_builtin,
+                                           command=self.render)
+        self.builtin_chk.pack(side="left", padx=(10, 0))
+        self.clear_btn = ttk.Button(bar, text="", style="Danger.TButton",
+                                    command=self.do_clear)
+        self.clear_btn.pack(side="right")
 
         body = tk.Frame(outer, bg=C_BG)
         body.pack(fill="both", expand=True)
 
         # 右栏必须先 pack：左栏带 expand，后 pack 会把右栏挤出窗口
-        rightcard = tk.Frame(body, bg=C_CARD, width=338, highlightbackground=C_BORDER,
+        rightcard = tk.Frame(body, bg=C_CARD, width=356, highlightbackground=C_BORDER,
                              highlightthickness=1)
         rightcard.pack(side="right", fill="y", padx=(12, 0))
         rightcard.pack_propagate(False)
@@ -1463,11 +1854,12 @@ class App:
 
         lhead = tk.Frame(leftcard, bg=C_CARD)
         lhead.pack(fill="x", padx=14, pady=(11, 4))
-        tk.Label(lhead, text="扩展一览", bg=C_CARD, fg=C_TEXT, font=F_BOLD).pack(side="left")
+        self.left_title_lb = tk.Label(lhead, text="", bg=C_CARD, fg=C_TEXT, font=F_BOLD)
+        self.left_title_lb.pack(side="left")
         self.count_lb = tk.Label(lhead, text="", bg=C_CARD, fg=C_MUTED, font=F_SMALL)
         self.count_lb.pack(side="left", padx=8, pady=(2, 0))
-        tk.Label(lhead, text="● 已装　○ 未装　·　单击选中　双击复制 ID", bg=C_CARD, fg=C_FAINT,
-                 font=F_SMALL).pack(side="right")
+        self.left_legend_lb = tk.Label(lhead, text="", bg=C_CARD, fg=C_FAINT, font=F_SMALL)
+        self.left_legend_lb.pack(side="right")
 
         wrap = tk.Frame(leftcard, bg=C_CARD)
         wrap.pack(fill="both", expand=True, padx=(6, 4), pady=(4, 8))
@@ -1487,7 +1879,6 @@ class App:
         self.drop.pack(fill="x", padx=14, pady=(14, 8))
         self.drop.bind("<Configure>", lambda e: self._draw_drop())
         self.drop.bind("<Button-1>", self._pick_file)
-        self._draw_drop()
         if HAS_DND:
             self.drop.drop_target_register(DND_FILES)
             self.drop.dnd_bind("<<Drop>>", self.on_drop)
@@ -1496,31 +1887,33 @@ class App:
 
         prow = tk.Frame(rightcard, bg=C_CARD)
         prow.pack(fill="x", padx=14)
-        self.paste = ttk.Entry(prow, font=F_SMALL)
+        self.lookup_btn = ttk.Button(prow, text="", width=7, command=self.on_paste)
+        self.lookup_btn.pack(side="right", padx=(6, 0))
+        self.paste = ttk.Entry(prow, font=F_SMALL, width=10)
         self.paste.pack(side="left", fill="x", expand=True)
-        ttk.Button(prow, text="识别", command=self.on_paste).pack(side="left", padx=(6, 0))
         self.paste.bind("<Return>", lambda e: self.on_paste())
 
-        self.picked = tk.Label(rightcard, text="还没选扩展 —— 拖入 / 点击选文件 / 点左侧行",
-                               bg=C_CARD, fg=C_FAINT, font=F_SMALL, height=2,
-                               justify="left", anchor="w", wraplength=304)
+        self.picked = tk.Label(rightcard, text="", bg=C_CARD, fg=C_FAINT, font=F_SMALL,
+                               height=2, justify="left", anchor="w", wraplength=308)
         self.picked.pack(fill="x", padx=14, pady=(8, 4))
 
         self._divider(rightcard)
 
-        tk.Label(rightcard, text="通道 A　商店扩展", bg=C_CARD, fg=C_GREEN,
-                 font=F_BOLD).pack(anchor="w", padx=14)
-        ttk.Button(rightcard, text="① 强制装到所有配置", style="Accent.TButton",
-                   command=self.do_force).pack(fill="x", padx=14, pady=2)
-        ttk.Button(rightcard, text="② 装，但允许我自己停用",
-                   command=self.do_normal).pack(fill="x", padx=14, pady=2)
-        ttk.Button(rightcard, text="③ 一键删除", style="Danger.TButton",
-                   command=self.do_remove).pack(fill="x", padx=14, pady=2)
+        self.ch_a_lb = tk.Label(rightcard, text="", bg=C_CARD, fg=C_GREEN, font=F_BOLD)
+        self.ch_a_lb.pack(anchor="w", padx=14)
+        self.force_btn = ttk.Button(rightcard, text="", style="Accent.TButton",
+                                    command=self.do_force)
+        self.force_btn.pack(fill="x", padx=14, pady=2)
+        self.normal_btn = ttk.Button(rightcard, text="", command=self.do_normal)
+        self.normal_btn.pack(fill="x", padx=14, pady=2)
+        self.remove_btn = ttk.Button(rightcard, text="", style="Danger.TButton",
+                                     command=self.do_remove)
+        self.remove_btn.pack(fill="x", padx=14, pady=2)
 
         self._divider(rightcard)
 
-        tk.Label(rightcard, text="通道 B　本地扩展", bg=C_CARD, fg=C_AMBER,
-                 font=F_BOLD).pack(anchor="w", padx=14)
+        self.ch_b_lb = tk.Label(rightcard, text="", bg=C_CARD, fg=C_AMBER, font=F_BOLD)
+        self.ch_b_lb.pack(anchor="w", padx=14)
 
         lrow = tk.Frame(rightcard, bg=C_CARD)
         lrow.pack(fill="x", padx=14)
@@ -1530,33 +1923,37 @@ class App:
                                    highlightbackground=C_BORDER, borderwidth=0,
                                    selectbackground="#EAF0FB", selectforeground=C_TEXT)
         self.local_lb.pack(side="left", fill="x", expand=True)
-        ttk.Button(lrow, text="移除", width=5, command=self.do_local_del).pack(
-            side="left", padx=(6, 0), anchor="n")
+        self.local_del_btn = ttk.Button(lrow, text="", width=5, command=self.do_local_del)
+        self.local_del_btn.pack(side="left", padx=(6, 0), anchor="n")
 
-        ttk.Button(rightcard, text="④ 解包并登记",
-                   command=self.do_local_add).pack(fill="x", padx=14, pady=(8, 3))
-        ttk.Button(rightcard, text="⑤ 给还缺的配置开扩展页",
-                   command=self.do_open_pages).pack(fill="x", padx=14, pady=2)
+        self.local_add_btn = ttk.Button(rightcard, text="", command=self.do_local_add)
+        self.local_add_btn.pack(fill="x", padx=14, pady=(8, 3))
+        self.open_pages_btn = ttk.Button(rightcard, text="", command=self.do_open_pages)
+        self.open_pages_btn.pack(fill="x", padx=14, pady=2)
 
-        # 底部记录卡片 + 后台/开机自启选项栏（利用标题行右侧空间，零额外高度消耗）
+        # 底部记录卡片 + 后台/开机自启选项栏
         footcard = tk.Frame(outer, bg=C_CARD, highlightbackground=C_BORDER,
                             highlightthickness=1)
         footcard.pack(fill="x", pady=(12, 0))
         fh = tk.Frame(footcard, bg=C_CARD)
         fh.pack(fill="x", padx=14, pady=(6, 0))
-        tk.Label(fh, text="记录", bg=C_CARD, fg=C_MUTED, font=F_SMALL).pack(side="left")
-        ttk.Button(
-            fh, text="最小化到托盘", style="CardGhost.TButton",
+        self.log_title_lb = tk.Label(fh, text="", bg=C_CARD, fg=C_MUTED, font=F_SMALL)
+        self.log_title_lb.pack(side="left")
+        self.hide_tray_btn = ttk.Button(
+            fh, text="", style="CardGhost.TButton",
             command=lambda: self.hide_to_tray(notify_first=True),
-        ).pack(side="right")
-        ttk.Checkbutton(
-            fh, text="默认后台", style="Card.TCheckbutton",
+        )
+        self.hide_tray_btn.pack(side="right")
+        self.bg_mode_chk = ttk.Checkbutton(
+            fh, text="", style="Card.TCheckbutton",
             variable=self.start_in_bg_var, command=self.on_toggle_bg_mode,
-        ).pack(side="right", padx=(0, 12))
-        ttk.Checkbutton(
-            fh, text="开机自启", style="Card.TCheckbutton",
+        )
+        self.bg_mode_chk.pack(side="right", padx=(0, 12))
+        self.autostart_chk = ttk.Checkbutton(
+            fh, text="", style="Card.TCheckbutton",
             variable=self.autostart_var, command=self.on_toggle_autostart,
-        ).pack(side="right", padx=(0, 12))
+        )
+        self.autostart_chk.pack(side="right", padx=(0, 12))
 
         self.logbox = tk.Text(footcard, height=2, wrap="word", font=F_MONO,
                               bg=C_CARD, fg="#374151", relief="flat", borderwidth=0,
@@ -1578,25 +1975,25 @@ class App:
         c.delete("all")
         w = c.winfo_width()
         if w < 20:
-            w = 300
+            w = 304
         h = 84
         on = self._hovering
         c.create_rectangle(3, 3, w - 3, h - 3, outline=C_ACCENT if on else "#CBD5E1",
                            width=2, dash=(5, 4), fill="#F5F9FF" if on else C_CARD)
         if HAS_DND:
-            t1, t2 = "把 .crx 拖到这里", "或点击选择 · 也支持解包目录"
+            t1, t2 = self.t("drop_t1_dnd"), self.t("drop_t2_dnd")
         else:
-            t1, t2 = "点击选择 .crx 扩展包", "安装 tkinterdnd2 可开启拖拽"
+            t1, t2 = self.t("drop_t1_click"), self.t("drop_t2_click")
         c.create_text(w / 2, 25, text=t1, fill=C_TEXT,
                       font=("Microsoft YaHei UI", 11, "bold"))
         c.create_text(w / 2, 46, text=t2, fill=C_MUTED, font=F_SMALL)
-        c.create_text(w / 2, 65, text="自动查商店，判定走 A 还是 B",
+        c.create_text(w / 2, 65, text=self.t("drop_t3"),
                       fill=C_FAINT, font=("Microsoft YaHei UI", 8))
 
     def _pick_file(self, event=None):
         p = filedialog.askopenfilename(
-            title="选择 Chrome 扩展安装包 (.crx)",
-            filetypes=[("Chrome 扩展包", "*.crx"), ("所有文件", "*.*")],
+            title=self.t("dlg_pick_title"),
+            filetypes=[(self.t("dlg_crx_filter"), "*.crx"), (self.t("dlg_all_filter"), "*.*")],
         )
         if p:
             self._handle_path(p)
@@ -1612,14 +2009,14 @@ class App:
         name = entry["name"] if entry else ""
         ver = entry["info"].get("version", "") if entry else ""
         if eid in self.force:
-            kind = "策略·强制"
+            kind_key = "kind_policy_force"
         elif eid in self.extset:
-            kind = "策略·可停"
+            kind_key = "kind_policy_normal"
         elif entry and entry["info"].get("location") == 1:
-            kind = "商店"
+            kind_key = "kind_store"
         else:
-            kind = "已装"
-        self.set_pending(eid, name, ver, "table", kind, log_it=False)
+            kind_key = "kind_installed"
+        self.set_pending(eid, name, ver, "table", kind_key, log_it=False)
 
     def _copy_id(self, event=None):
         item = self.tree.focus()
@@ -1628,7 +2025,7 @@ class App:
             return
         self.root.clipboard_clear()
         self.root.clipboard_append(eid)
-        self.log("已复制 ID：%s" % eid)
+        self.log(self.t("log_copied_id", eid))
 
     # -------------------------------------------------- 数据与渲染
 
@@ -1655,7 +2052,7 @@ class App:
 
         prev_dir, _ = self._current_source_profile()
         target_dir = prev_dir or self.settings.get("sync_source", "")
-        self.src_box["values"] = ["%s（%s）" % (n, d) for d, n in self.profiles]
+        self.src_box["values"] = ["%s (%s)" % (n, d) for d, n in self.profiles]
         if self.profiles:
             pick_idx = 0
             for idx, (d, _) in enumerate(self.profiles):
@@ -1667,6 +2064,7 @@ class App:
         self.render_local()
         self.render()
         self.render_status()
+        self._render_pending()
 
     def _build_status_parts(self):
         total = len(self.profiles)
@@ -1675,25 +2073,25 @@ class App:
             where = self.ext_map.get(eid, {}).get("where", {})
             if sum(1 for d, _ in self.profiles if d in where) < total:
                 stuck += 1
-        parts = ["%d 配置" % total, "%d 策略" % (len(self.force) + len(self.extset))]
+        parts = [self.t("pill_profiles", total), self.t("pill_policies", len(self.force) + len(self.extset))]
         if stuck:
-            parts.append("%d 缺" % stuck)
+            parts.append(self.t("pill_missing", stuck))
         if self.pool:
-            parts.append("%d 本地" % len(self.pool))
+            parts.append(self.t("pill_local", len(self.pool)))
         run = chrome_running()
-        parts.append("Chrome " + ("开" if run else "关"))
+        parts.append(self.t("pill_chrome_on" if run else "pill_chrome_off"))
         return parts, run
 
     def _update_tray_tooltip(self):
         parts, _ = self._build_status_parts()
-        tip = "%s - %s" % (APP_SHORT_TITLE, " · ".join(parts[:3]))
+        tip = "%s - %s" % (self.t("app_short"), " · ".join(parts[:3]))
         if self.auto_sync_var.get():
-            tip += " · 自动同步开"
+            tip += " · " + self.t("tip_auto_sync_on")
         self.tray.set_tooltip(tip)
 
     def render_status(self):
         parts, run = self._build_status_parts()
-        self.pill.configure(text="  ·  ".join(parts),
+        self.pill.configure(text=" · ".join(parts),
                             bg="#FDF1E3" if run else "#E8F5EE",
                             fg=C_AMBER if run else C_GREEN)
         self.ver_lb.configure(text=chrome_version())
@@ -1712,8 +2110,8 @@ class App:
         if total < 200:
             total = 800
         n = max(1, len(self.profiles))
-        pol_w, id_w = 58, 118
-        name_w = max(185, min(295, int(total * 0.27)))
+        pol_w, id_w = 76, 118
+        name_w = max(185, min(285, int(total * 0.27)))
         pw = max(56, (total - name_w - id_w - pol_w - 6) // n)
         return name_w, id_w, pw, pol_w
 
@@ -1749,12 +2147,12 @@ class App:
         cols = ["name", "id"] + ["p%d" % i for i in range(len(profs))] + ["pol"]
         self.tree.configure(columns=cols)
         name_w, id_w, pw, pol_w = self._col_widths()
-        self.tree.heading("name", text="扩展")
+        self.tree.heading("name", text=self.t("col_ext"))
         self.tree.column("name", width=name_w, anchor="w")
-        self.tree.heading("id", text="ID")
+        self.tree.heading("id", text=self.t("col_id"))
         self.tree.column("id", width=id_w, anchor="w")
         self._apply_profile_headings(pw)
-        self.tree.heading("pol", text="策略")
+        self.tree.heading("pol", text=self.t("col_pol"))
         self.tree.column("pol", width=pol_w, anchor="center")
 
         for i in self.tree.get_children():
@@ -1769,16 +2167,16 @@ class App:
             if loc in HIDDEN_LOC and not (forced or normal) and not self.show_builtin.get():
                 continue
             cells = ["●" if p in d["where"] else "○" for p in profs]
-            tag = "强制" if forced else ("可停" if normal else "")
+            tag = self.t("tag_force") if forced else (self.t("tag_normal") if normal else "")
             short = (eid[:8] + "…") if len(eid) > 8 else eid
             rows.append((d["name"], eid, short, cells, tag))
 
         for eid in list(self.force.keys()) + [e for e in self.extset if e not in self.force]:
             if eid in self.ext_map:
                 continue
-            rows.append(("未落地 · " + eid[:8], eid, eid[:8] + "…",
+            rows.append((self.t("unlanded") + eid[:8], eid, eid[:8] + "…",
                          ["○"] * len(profs),
-                         "强制" if eid in self.force else "可停"))
+                         self.t("tag_force") if eid in self.force else self.t("tag_normal")))
 
         rows.sort(key=lambda r: r[0].lower())
         for idx, (name, eid, short, cells, tag) in enumerate(rows):
@@ -1786,69 +2184,82 @@ class App:
                                    tags=("odd",) if idx % 2 else ())
             self.row_ids[iid] = eid
 
-        self.count_lb.configure(text="共 %d 个" % len(rows))
+        self.count_lb.configure(text=self.t("left_count", len(rows)))
 
     # -------------------------------------------------- 选择与异步商店检查
 
-    def set_pending(self, eid, name, version, source, kind, log_it=True):
-        self.pending = {"id": eid, "name": name, "version": version,
-                        "source": source, "kind": kind}
+    def _render_pending(self):
+        if not self.pending:
+            self.picked.configure(text=self.t("picked_empty"), fg=C_FAINT)
+            return
+        p = self.pending
+        eid = p["id"]
+        kind_key = p.get("kind_key", "kind_unknown")
+        kind_label = self.t(kind_key)
         where = len(self.ext_map.get(eid, {}).get("where", {}))
         color = {
-            "商店": C_GREEN,
-            "本地": C_AMBER,
-            "策略·强制": C_ACCENT,
-            "策略·可停": C_GREEN,
-        }.get(kind, C_TEXT)
-        line1 = "%s · %s  v%s" % (kind or "未知", name or "（无名）", version or "?")
+            "kind_store": C_GREEN,
+            "kind_local": C_AMBER,
+            "kind_policy_force": C_ACCENT,
+            "kind_policy_normal": C_GREEN,
+        }.get(kind_key, C_TEXT)
+        line1 = "%s · %s  v%s" % (kind_label, p["name"] or self.t("unnamed"), p["version"] or "?")
         line1 = _fit_text(line1, 30)
         short_id = (eid[:14] + "…") if len(eid) > 14 else eid
         self.picked.configure(
-            text="%s\n%s  ·  已装 %d / %d"
-                 % (line1, short_id, where, len(self.profiles)),
+            text="%s\n%s  ·  %s"
+                 % (line1, short_id, self.t("picked_installed", where, len(self.profiles))),
             fg=color)
+
+    def set_pending(self, eid, name, version, source, kind_key, log_it=True):
+        self.pending = {
+            "id": eid, "name": name, "version": version,
+            "source": source, "kind_key": kind_key,
+            "kind": self.t(kind_key),
+        }
+        self._render_pending()
         if log_it:
-            self.log("识别到 %s  %s  [%s]" % (name or "（无名）", eid, kind))
+            self.log(self.t("log_picked", name or self.t("unnamed"), eid, self.t(kind_key)))
 
     def _query_store_async(self, eid, name, ver, source, local_hint=False):
         """后台线程查询商店是否存在，避免阻塞界面"""
         self._query_seq += 1
         seq = self._query_seq
-        self.set_pending(eid, name, ver, source, "查商店中…", log_it=False)
-        self.log("查商店…")
+        self.set_pending(eid, name, ver, source, "kind_checking", log_it=False)
+        self.log(self.t("log_checking"))
 
         def worker():
             has = store_has(eid)
-            kind = {True: "商店", False: "本地", None: "查询失败"}[has]
+            kind_key = {True: "kind_store", False: "kind_local", None: "kind_failed"}[has]
 
             def finish():
                 if seq != self._query_seq:
                     return
-                self.set_pending(eid, name, ver, source, kind)
-                if local_hint and kind == "本地":
-                    self.log("商店里没有 —— 走通道 B。")
+                self.set_pending(eid, name, ver, source, kind_key)
+                if local_hint and kind_key == "kind_local":
+                    self.log(self.t("log_not_in_store"))
 
             self.call_ui(finish)
 
         threading.Thread(target=worker, daemon=True).start()
 
     def _handle_path(self, p):
-        self.log("拖入：%s" % p)
+        self.log(self.t("log_dropped", p))
         try:
             if os.path.isdir(p):
                 eid, name, ver = read_folder(p)
-                self.set_pending(eid, name, ver, p, "文件夹")
+                self.set_pending(eid, name, ver, p, "kind_folder")
             elif p.lower().endswith(".crx"):
                 eid, name, ver, _ = read_crx(p)
                 self._query_store_async(eid, name, ver, p, local_hint=True)
             else:
                 gid = guess_id(p)
                 if not gid:
-                    raise ValueError("认不出来：只支持 .crx / 解包目录 / 商店链接 / 32 位 ID")
+                    raise ValueError(self.t("err_unknown_file"))
                 self._query_store_async(gid, "", "", p, local_hint=False)
         except Exception as e:
-            self.log("失败：%s" % e, "warn")
-            messagebox.showwarning("没认出来", str(e))
+            self.log(self.t("log_failed", e), "warn")
+            messagebox.showwarning(self.t("dlg_unrecognized"), str(e))
 
     def on_drop(self, event):
         try:
@@ -1862,7 +2273,7 @@ class App:
     def on_paste(self):
         gid = guess_id(self.paste.get())
         if not gid:
-            messagebox.showwarning("没认出来", "粘贴商店页面链接，或 32 位扩展 ID")
+            messagebox.showwarning(self.t("dlg_unrecognized"), self.t("dlg_paste_hint"))
             return
         entry = self.ext_map.get(gid)
         name = entry["name"] if entry else ""
@@ -1873,13 +2284,13 @@ class App:
 
     def _need(self):
         if not self.pending:
-            messagebox.showinfo("先选一个", "先把 .crx 拖进来，粘贴链接 / ID，或单击左侧列表中的扩展。")
+            messagebox.showinfo(self.t("dlg_need_title"), self.t("dlg_need_msg"))
             return None
         return self.pending
 
     def _after(self):
         if chrome_running():
-            self.log("Chrome 正开着 —— 请完全退出（含托盘）再打开才生效。")
+            self.log(self.t("log_chrome_running"))
         self.refresh()
 
     def do_force(self):
@@ -1887,9 +2298,9 @@ class App:
         if not p:
             return
         if not messagebox.askokcancel(
-                "确认", "把 %s\n强制装进全部 %d 个配置？\n\n"
-                        "强制装的扩展界面上不能停用、不能卸载，会显示「由贵单位管理」。"
-                        % (p["name"] or p["id"], len(self.profiles))):
+            self.t("dlg_confirm"),
+            self.t("dlg_force_msg", p["name"] or p["id"], len(self.profiles)),
+        ):
             return
         ids = list(self.force.keys())
         if p["id"] not in ids:
@@ -1897,7 +2308,7 @@ class App:
         write_forcelist(ids)
         if p["id"] in self.extset:
             del_tree(EXTSET + "\\" + p["id"])
-        self.log("已强装 %s" % p["id"])
+        self.log(self.t("log_forced", p["id"]))
         self._after()
 
     def do_normal(self):
@@ -1907,7 +2318,7 @@ class App:
         set_normal_installed(p["id"])
         if p["id"] in self.force:
             write_forcelist([i for i in self.force if i != p["id"]])
-        self.log("已设为「自动装、可停用」：%s" % p["id"])
+        self.log(self.t("log_normal", p["id"]))
         self._after()
 
     def do_remove(self):
@@ -1918,18 +2329,17 @@ class App:
             write_forcelist([i for i in self.force if i != p["id"]])
         if p["id"] in self.extset:
             del_tree(EXTSET + "\\" + p["id"])
-        self.log("已从策略撤掉 %s" % p["id"])
-        self.log("重启 Chrome 后，策略装上的会自动卸；原先手动装的可能留下。")
+        self.log(self.t("log_removed", p["id"]))
+        self.log(self.t("log_removed_hint"))
         self._after()
 
     def do_clear(self):
-        if not messagebox.askokcancel("确认",
-                                      "清空全部扩展策略？只动「强制安装 / 扩展设置 / 安装来源」三项。"):
+        if not messagebox.askokcancel(self.t("dlg_confirm"), self.t("dlg_clear_msg")):
             return
         del_tree(FORCELIST)
         del_tree(EXTSET)
         del_tree(INSTALL_SOURCES)
-        self.log("策略已清空。")
+        self.log(self.t("log_cleared"))
         self._after()
 
     def do_spread(self):
@@ -1940,11 +2350,15 @@ class App:
         exts = read_extensions(pdir)
         ids = [e for e, i in exts.items() if i.get("location") == 1]
         if not ids:
-            messagebox.showinfo("没有可铺的", "这个配置里没有从商店装的扩展。")
+            messagebox.showinfo(self.t("dlg_spread_none_title"), self.t("dlg_spread_none_msg"))
             return
-        if not messagebox.askokcancel(
-                "确认", "把「%s」里的 %d 个商店扩展强制装进所有配置？\n\n%s"
-                        % (pname, len(ids), "\n".join(exts[e]["name"] for e in ids[:10]))):
+        preview = "\n".join(exts[e]["name"] for e in ids[:10])
+        msg = (
+            self.t("dlg_spread_msg", len(ids), pname, preview)
+            if self.lang == "en"
+            else self.t("dlg_spread_msg", pname, len(ids), preview)
+        )
+        if not messagebox.askokcancel(self.t("dlg_confirm"), msg):
             return
         cur = list(self.force.keys())
         for e in ids:
@@ -1952,7 +2366,7 @@ class App:
                 cur.append(e)
         write_forcelist(cur)
         self._persist_settings()
-        self.log("已铺开 %d 个扩展。" % len(ids))
+        self.log(self.t("log_spread", len(ids)))
         self._after()
 
     # -------------------------------------------------- 通道 B
@@ -1974,64 +2388,69 @@ class App:
                 unpack_to_packs(eid, payload)
                 shutil.copy2(src, os.path.join(PACK_DIR, p["id"] + ".crx"))
             else:
-                raise ValueError("这一条只能从 .crx 或文件夹来，光有 ID 解不了包")
+                raise ValueError(self.t("dlg_unpack_need_file"))
             self.pool = [x for x in self.pool if x["id"] != p["id"]]
             self.pool.append({"id": p["id"], "name": p["name"] or p["id"][:8],
                               "version": p["version"] or ""})
             save_pool(self.pool)
             self.render_local()
-            self.log("已解包到 packs\\%s" % p["id"])
+            self.log(self.t("log_unpacked", p["id"]))
             allow_local_sources()
-            self.log("已放开 file:// 安装来源，以后拖 crx 进扩展页不会被拦。")
+            self.log(self.t("log_allowed_src"))
         except Exception as e:
-            self.log("解包失败：%s" % e, "warn")
-            messagebox.showwarning("解包失败", str(e))
-
-    def do_allow(self):
-        allow_local_sources()
-        self.log("已放开 file:// 安装来源（ExtensionInstallSources）。")
-        messagebox.showinfo("好了",
-                            "Chrome 完全退出再打开，之后把 crx 拖进扩展页就不会被拦。\n"
-                            "这一步一次就够，不用每个配置做。")
+            self.log(self.t("log_unpack_err", e), "warn")
+            messagebox.showwarning(self.t("dlg_unpack_err_title"), str(e))
 
     def do_open_pages(self):
         sel = self.local_lb.curselection()
         if not sel:
-            messagebox.showinfo("先选一个", "在本地扩展列表里选中一个扩展。")
+            messagebox.showinfo(self.t("dlg_need_title"), self.t("dlg_local_need_sel"))
             return
         p = self.pool[sel[0]]
         allow_local_sources()
         where = self.ext_map.get(p["id"], {}).get("where", {})
         missing = [(d, n) for d, n in self.profiles if d not in where]
         if not missing:
-            messagebox.showinfo("齐了", "所有配置都已经有这个扩展了。")
+            messagebox.showinfo(self.t("dlg_all_done_title"), self.t("dlg_all_done_msg"))
             return
         crx = os.path.join(PACK_DIR, p["id"] + ".crx")
         target = crx if os.path.exists(crx) else os.path.join(PACK_DIR, p["id"])
-        self.log("还缺 %d 个配置：%s" % (len(missing), "、".join(n for _, n in missing)))
-        self.log("拖这个：%s" % target)
+        self.log(self.t("log_missing_profs", len(missing), self.t("sep_list").join(n for _, n in missing)))
+        self.log(self.t("log_drag_target", target))
         n = open_extension_pages(missing)
         if n == 1:
-            messagebox.showinfo("开了 1 个窗口",
-                                "把下面这个拖进窗口里的扩展页：\n%s" % target)
+            messagebox.showinfo(self.t("dlg_opened_1_title"), self.t("dlg_opened_1_msg", target))
         else:
-            messagebox.showinfo("开了 %d 个窗口" % n,
-                                "每个窗口对应一个还缺它的配置。\n\n"
-                                "把下面这个，逐个拖进每个窗口的扩展页：\n%s\n\n"
-                                "同一个文件可以拖很多次。" % target)
+            messagebox.showinfo(self.t("dlg_opened_n_title", n), self.t("dlg_opened_n_msg", target))
 
     def do_local_del(self):
         sel = self.local_lb.curselection()
         if not sel:
             return
         p = self.pool[sel[0]]
-        if not messagebox.askokcancel("确认", "从本地池移除 %s？\n（packs 里的文件保留，不会删）"
-                                      % (p.get("name") or p["id"])):
+        if not messagebox.askokcancel(
+            self.t("dlg_confirm"),
+            self.t("dlg_local_del_msg", p.get("name") or p["id"]),
+        ):
             return
         self.pool = [x for x in self.pool if x["id"] != p["id"]]
         save_pool(self.pool)
         self.render_local()
-        self.log("已从池里移除 %s" % p["id"])
+        self.log(self.t("log_local_removed", p["id"]))
+
+
+def _parse_lang_arg(argv):
+    for a in argv:
+        low = a.lower()
+        if low.startswith("--lang="):
+            val = low.split("=", 1)[1].strip()
+            if val in ("auto", "zh", "en"):
+                return val
+        elif low in ("--en", "--english"):
+            return "en"
+        elif low in ("--zh", "--chinese"):
+            return "zh"
+    return None
 
 
 def main():
@@ -2039,8 +2458,8 @@ def main():
     force_bg = "--background" in args or "--minimized" in args
     force_show = "--show" in args
     launched_by_autostart = "--autostart" in args
+    lang_override = _parse_lang_arg(sys.argv[1:])
 
-    # 单实例检查：已有实例在后台时，再次打开直接唤醒已有窗口
     hmutex = acquire_single_instance(wake_existing=not force_bg)
     if not hmutex:
         return
@@ -2068,6 +2487,7 @@ def main():
             start_hidden=start_hidden,
             launched_by_autostart=launched_by_autostart,
             icon_path=icon_path,
+            lang_override=lang_override,
         )
         try:
             root.mainloop()
@@ -2088,6 +2508,6 @@ if __name__ == "__main__":
         except Exception:
             pass
         try:
-            messagebox.showerror("启动失败", tb[-1500:])
+            messagebox.showerror(tr(_BOOT_LANG, "dlg_startup_err"), tb[-1500:])
         except Exception:
             pass

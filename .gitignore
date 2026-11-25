@@ -4,6 +4,12 @@ local.json
 settings.json
 error.log
 
+# 打包构建产物（EXE 通过 GitHub Releases 分发）
+dist/
+build/
+*.spec
+*.exe
+
 # Python 缓存
 __pycache__/
 *.py[cod]
