@@ -40,6 +40,7 @@ import ctypes
 import hashlib
 import zipfile
 import shutil
+import tempfile
 import threading
 import subprocess
 import urllib.parse
@@ -85,7 +86,8 @@ INSTALL_SOURCES = POLICY + r"\ExtensionInstallSources"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 STORE_URL = "https://clients2.google.com/service/update2/crx"
 IDCHARS = "abcdefghijklmnop"
-HIDDEN_LOC = {5, 6, 10}
+HIDDEN_LOC = {5, 10}
+BUILTIN_IDS = {"lmjegmlicamnimmfhcmpkclmigmmcbeh"}  # Google Docs Offline 预装扩展
 
 # 后台巡检间隔（毫秒）
 STATUS_POLL_MS = 15000
@@ -114,15 +116,18 @@ I18N = {
         "btn_spread": "铺开",
         "chk_auto_sync": "自动同步",
         "chk_builtin": "显示内置组件",
+        "btn_kill_chrome": "关闭 Chrome",
         "btn_clear": "清空全部策略",
         "left_title": "扩展一览",
         "left_count": "共 %d 个",
-        "left_legend": "● 已装　○ 未装　·　单击选中　双击复制 ID",
+        "left_legend": "● 已装　◐ 待开号生效　○ 未装 · 仅表示本地快照，以打开浏览器为准",
         "col_ext": "扩展",
         "col_id": "ID",
         "col_pol": "策略",
         "tag_force": "强制",
         "tag_normal": "可停",
+        "tag_removed": "卸载",
+        "tag_blocked": "禁用",
         "unlanded": "未落地 · ",
         "drop_t1_dnd": "把 .crx 拖到这里",
         "drop_t2_dnd": "或点击选择 · 也支持解包目录",
@@ -142,6 +147,7 @@ I18N = {
         "btn_local_add": "④ 解包并登记",
         "btn_open_pages": "⑤ 给还缺的配置开扩展页",
         "log_title": "记录",
+        "btn_elevate": "管理员模式重启",
         "chk_autostart": "开机自启",
         "chk_bg_mode": "默认后台",
         "btn_hide_tray": "最小化到托盘",
@@ -151,6 +157,8 @@ I18N = {
         "pill_local": "%d 本地",
         "pill_chrome_on": "Chrome 开",
         "pill_chrome_off": "Chrome 关",
+        "pill_non_admin": "需提权",
+        "pill_hklm_conflict": "HKLM冲突",
         "tip_auto_sync_on": "自动同步开",
         "kind_store": "商店",
         "kind_local": "本地",
@@ -159,11 +167,13 @@ I18N = {
         "kind_failed": "查询失败",
         "kind_policy_force": "策略·强制",
         "kind_policy_normal": "策略·可停",
+        "kind_policy_removed": "策略·卸载",
         "kind_installed": "已装",
         "kind_unknown": "未知",
         "tray_show": "打开主界面",
         "tray_hide": "隐藏主界面",
         "tray_refresh": "立即刷新状态",
+        "tray_kill_chrome": "关闭 Chrome 后台",
         "tray_sync": "立即同步（%s）",
         "tray_sync_none": "立即同步（未选基准）",
         "tray_autostart": "开机自启",
@@ -176,11 +186,31 @@ I18N = {
         "notify_no_source": "未找到可用的基准配置，无法同步。",
         "notify_sync_clean": "「%s」的扩展已全部同步，无需变更。",
         "notify_sync_done": "已同步 %d 个新扩展（%s）",
-        "notify_restart_chrome": "，重启 Chrome 生效。",
+        "notify_restart_chrome": "，重启 Chrome 并打开对应账户后生效。",
         "log_save_err": "保存设置失败：%s",
-        "log_autostart_on": "已开启开机自启（HKCU Run：%s）",
+        "log_autostart_on": "已开启开机自启（%s）",
         "log_autostart_off": "已关闭开机自启。",
         "log_autostart_err": "设置开机自启失败：%s",
+        "log_need_admin": "当前为普通权限：写入组策略时将自动请求 UAC 管理员授权，也可点右下「管理员模式重启」。",
+        "log_hklm_conflict": "检测到 HKLM 存在旧扩展策略（会覆盖 HKCU 策略），执行任意安装/删除/清空时将自动清理冲突。",
+        "log_uac_cancelled": "已取消管理员授权，本次策略未修改。",
+        "log_policy_err": "策略写入失败：%s",
+        "dlg_policy_err_title": "策略写入失败",
+        "dlg_policy_err_detail": "无法写入 Chrome 组策略：\n%s\n\n请检查以下原因：\n1. 弹出 UAC 管理员授权框时是否点了「是」\n2. 可先点右下角「管理员模式重启」后再试\n3. 杀毒软件 / 安全工具是否拦截了注册表写入",
+        "dlg_store_missing_title": "无法通过商店策略安装",
+        "dlg_store_missing_msg": "检测到 %s 不在 Chrome 应用商店中。\n\n受 Chrome 平台限制，非域控 Windows 无法通过组策略强制安装商店外扩展。\n请改用下方【通道 B 本地扩展】：\n④ 解包并登记 → ⑤ 给还缺的配置开扩展页，手动拖入即可。",
+        "dlg_store_net_title": "商店连通性检测失败",
+        "dlg_store_net_msg": "检测扩展 %s 时无法连接 Chrome 应用商店（clients2.google.com）。\n\n请检查网络或代理设置；若无法访问商店，即使写入策略 Chrome 也无法下载安装。\n是否仍要先写入策略？",
+        "dlg_apply_ok_title": "策略已写入（需打开账户生效）",
+        "dlg_apply_ok_chrome_on": "%s\n\n【如何生效】\n1. 当前 Chrome 仍在运行：请先点界面「关闭 Chrome」彻底退出后台，再重新打开 Chrome；\n2. 依次打开各个 Chrome 账户窗口（未打开的账户不会在后台自动下载/卸载），等待约 5–20 秒；\n3. 新装扩展默认收在右上角 🧩 拼图菜单中，装完后点本软件「刷新」即可更新状态。\n\n【若仍装不上 / 未生效，请检测】\n· 网络/代理能否访问 Chrome 商店（clients2.google.com）\n· 该扩展是否仍在商店正常上架（非商店扩展需走通道 B）\n· 在 Chrome 打开 chrome://policy 确认策略已加载并点「重新加载政策」",
+        "dlg_apply_ok_chrome_off": "%s\n\n【如何生效】\n1. 重新打开 Chrome，并依次切到各个账户窗口（未打开的账户不会在后台自动下载/卸载）；\n2. 打开账户后约 5–20 秒自动完成；新装扩展默认收在右上角 🧩 拼图菜单中；\n3. 装完后回到本软件点「刷新」即可查看最新状态。\n\n【若仍装不上 / 未生效，请检测】\n· 网络/代理能否访问 Chrome 商店（clients2.google.com）\n· 该扩展是否仍在商店正常上架（非商店扩展需走通道 B）\n· 在 Chrome 打开 chrome://policy 确认策略已加载并点「重新加载政策」",
+        "dlg_need_admin_title": "需要管理员权限",
+        "dlg_need_admin_msg": "写入 Chrome 组策略需要管理员权限（拒绝访问）。\n\n是否立即以管理员身份重新启动扩展管家？",
+        "log_removed_all": "已写入全局卸载策略：%s（重启 Chrome 后从全部配置卸载）",
+        "log_removed_cancel": "已撤销全局卸载策略：%s",
+        "dlg_remove_choice_msg": "删除 %s 的方式：\n\n· 点「是」：同时写入全局卸载策略，重启 Chrome 后把所有配置里手动安装的版本也一并卸载（之后仍可重装）\n· 点「否」：仅撤回托管策略（仅卸载策略强装的版本）",
+        "dlg_remove_manual_msg": "%s 当前为手动安装（不在托管策略中）。\n\n是否写入 Chrome 全局卸载策略，重启 Chrome 后从全部配置自动卸载它？（卸载后仍可重新从商店安装）",
+        "dlg_remove_undo_msg": "%s 当前处于「全局卸载」策略中。\n\n是否撤回该卸载策略（恢复允许正常安装）？",
         "log_bg_on": "已开启默认后台：下次启动直接进系统托盘，点关闭按钮也仅隐藏到托盘。",
         "log_bg_off": "已关闭默认后台：下次启动直接显示主界面，点关闭按钮将退出程序。",
         "log_auto_sync_on": "已开启后台自动同步：每分钟检查「%s」新增商店扩展并自动补齐策略。",
@@ -195,7 +225,13 @@ I18N = {
         "log_not_in_store": "商店里没有 —— 走通道 B。",
         "log_dropped": "拖入：%s",
         "log_failed": "失败：%s",
-        "log_chrome_running": "Chrome 正开着 —— 请完全退出（含托盘）再打开才生效。",
+        "log_chrome_running": "Chrome 正开着 —— 请点「关闭 Chrome」彻底退出再重开，并打开对应账户窗口才会触发安装/卸载（约 5–20 秒，新装扩展默认收在右上角 🧩 拼图里）。",
+        "log_apply_tip": "提示：启动 Chrome 后，需依次打开对应账户窗口才会触发自动安装/卸载（未打开的账户不会在后台下载，约 5–20 秒完成，新装扩展默认收在右上角 🧩 拼图里）。",
+        "log_chrome_not_running": "Chrome 当前未在运行，无需关闭。",
+        "log_chrome_killed": "已关闭所有 Chrome 窗口与后台进程；重新打开 Chrome 并切到对应账户窗口即可触发策略生效。",
+        "log_chrome_kill_left": "已尝试关闭 Chrome，但仍有进程残留（可点右下管理员重启后再试）。",
+        "log_chrome_kill_err": "关闭 Chrome 失败：%s",
+        "dlg_kill_chrome_msg": "确定关闭所有 Chrome 窗口及后台进程？\n\n会先尝试温和关闭以保留标签页会话，若仍有后台驻留进程再强制结束。",
         "log_forced": "已强装 %s",
         "log_normal": "已设为「自动装、可停用」：%s",
         "log_removed": "已从策略撤掉 %s",
@@ -221,11 +257,11 @@ I18N = {
         "dlg_need_title": "先选一个",
         "dlg_need_msg": "先把 .crx 拖进来，粘贴链接 / ID，或单击左侧列表中的扩展。",
         "dlg_confirm": "确认",
-        "dlg_force_msg": "把 %s\n强制装进全部 %d 个配置？\n\n强制装的扩展界面上不能停用、不能卸载，会显示「由贵单位管理」。",
+        "dlg_force_msg": "把 %s\n强制装进全部 %d 个配置？\n\n· 强制装的扩展不能手动停用/卸载，会显示「由贵单位管理」\n· 写入后需彻底重启 Chrome，并打开对应账户窗口才会开始下载（约 5–20 秒，默认收在右上角 🧩 拼图里）",
         "dlg_clear_msg": "清空全部扩展策略？只动「强制安装 / 扩展设置 / 安装来源」三项。",
         "dlg_spread_none_title": "没有可铺的",
         "dlg_spread_none_msg": "这个配置里没有从商店装的扩展。",
-        "dlg_spread_msg": "把「%s」里的 %d 个商店扩展强制装进所有配置？\n\n%s",
+        "dlg_spread_msg": "把「%s」里的 %d 个商店扩展强制装进所有配置？\n\n%s\n\n提示：写入后需彻底重启 Chrome，并打开对应账户窗口才会开始下载生效。",
         "dlg_unpack_err_title": "解包失败",
         "dlg_unpack_need_file": "这一条只能从 .crx 或文件夹来，光有 ID 解不了包",
         "dlg_local_need_sel": "在本地扩展列表里选中一个扩展。",
@@ -251,15 +287,18 @@ I18N = {
         "btn_spread": "Spread All",
         "chk_auto_sync": "Auto-Sync",
         "chk_builtin": "Built-in",
+        "btn_kill_chrome": "Close Chrome",
         "btn_clear": "Clear Policies",
         "left_title": "Extensions",
         "left_count": "%d total",
-        "left_legend": "● Installed  ○ Missing  ·  Click select · 2×Click copy ID",
+        "left_legend": "● Installed  ◐ Pending Open  ○ Missing · Snapshot only; open Chrome to apply",
         "col_ext": "Extension",
         "col_id": "ID",
         "col_pol": "Policy",
         "tag_force": "Force",
         "tag_normal": "Normal",
+        "tag_removed": "Remove",
+        "tag_blocked": "Block",
         "unlanded": "Pending · ",
         "drop_t1_dnd": "Drop .crx file here",
         "drop_t2_dnd": "Click to browse · Folder OK",
@@ -279,6 +318,7 @@ I18N = {
         "btn_local_add": "④ Unpack & Register",
         "btn_open_pages": "⑤ Open Pages for Missing",
         "log_title": "Log",
+        "btn_elevate": "Run as Admin",
         "chk_autostart": "Auto-Start",
         "chk_bg_mode": "Start in Tray",
         "btn_hide_tray": "Hide to Tray",
@@ -288,6 +328,8 @@ I18N = {
         "pill_local": "%d Local",
         "pill_chrome_on": "Chrome On",
         "pill_chrome_off": "Chrome Off",
+        "pill_non_admin": "UAC Needed",
+        "pill_hklm_conflict": "HKLM Conflict",
         "tip_auto_sync_on": "Auto-Sync On",
         "kind_store": "Store",
         "kind_local": "Local",
@@ -296,11 +338,13 @@ I18N = {
         "kind_failed": "Lookup Failed",
         "kind_policy_force": "Policy·Force",
         "kind_policy_normal": "Policy·Normal",
+        "kind_policy_removed": "Policy·Remove",
         "kind_installed": "Installed",
         "kind_unknown": "Unknown",
         "tray_show": "Open ExtKeeper",
         "tray_hide": "Hide Window",
         "tray_refresh": "Refresh Status",
+        "tray_kill_chrome": "Close All Chrome",
         "tray_sync": "Sync Now (%s)",
         "tray_sync_none": "Sync Now (No Baseline)",
         "tray_autostart": "Launch at Startup",
@@ -313,11 +357,31 @@ I18N = {
         "notify_no_source": "No baseline profile available for sync.",
         "notify_sync_clean": "All Web Store extensions in '%s' are already synced.",
         "notify_sync_done": "Synced %d new extension(s) (%s)",
-        "notify_restart_chrome": ". Restart Chrome to apply.",
+        "notify_restart_chrome": ". Restart Chrome and open each profile window to apply.",
         "log_save_err": "Failed to save settings: %s",
-        "log_autostart_on": "Auto-start enabled (HKCU Run: %s)",
+        "log_autostart_on": "Auto-start enabled (%s)",
         "log_autostart_off": "Auto-start disabled.",
         "log_autostart_err": "Failed to update auto-start: %s",
+        "log_need_admin": "Running as standard user: policy writes will auto-prompt UAC, or click 'Run as Admin'.",
+        "log_hklm_conflict": "Detected legacy HKLM Chrome extension policies overriding HKCU; any install/remove/clear action will clean them automatically.",
+        "log_uac_cancelled": "Administrator elevation cancelled; policy unchanged.",
+        "log_policy_err": "Policy operation failed: %s",
+        "dlg_policy_err_title": "Policy Write Failed",
+        "dlg_policy_err_detail": "Failed to write Chrome Group Policy:\n%s\n\nPlease check:\n1. Click 'Yes' when the Windows UAC prompt appears\n2. Try clicking 'Run as Admin' at the bottom-right first\n3. Check if antivirus / security software blocked registry access",
+        "dlg_store_missing_title": "Cannot Install via Web Store Policy",
+        "dlg_store_missing_msg": "%s was not found on the Chrome Web Store.\n\nOn non-domain Windows PCs, Chrome blocks force-installing non-store extensions via policy.\nPlease use Channel B (Local / Private) below:\n④ Unpack & Register → ⑤ Open Pages for Missing, then drag & drop.",
+        "dlg_store_net_title": "Web Store Check Failed",
+        "dlg_store_net_msg": "Could not reach Chrome Web Store (clients2.google.com) while checking %s.\n\nPlease check your network/proxy. Without Web Store access, Chrome cannot download the extension even if policy is written.\nWrite the policy anyway?",
+        "dlg_apply_ok_title": "Policy Saved (Open Profiles to Apply)",
+        "dlg_apply_ok_chrome_on": "%s\n\n[How to Apply]\n1. Chrome is running: click 'Close Chrome' to exit all background processes, then reopen Chrome.\n2. Open each target Chrome profile window (unopened profiles won't download/remove in the background) and wait ~5–20s.\n3. Newly installed icons appear under the 🧩 Extensions menu. Click 'Refresh' here afterwards.\n\n[If Install Fails / Doesn't Take Effect, Check]\n· Network/proxy can reach clients2.google.com\n· Extension is still listed on Chrome Web Store (non-store CRX must use Channel B)\n· Open chrome://policy in Chrome and click 'Reload policies'",
+        "dlg_apply_ok_chrome_off": "%s\n\n[How to Apply]\n1. Launch Chrome and open each target profile window (unopened profiles won't download/remove in the background).\n2. Wait ~5–20s per profile; newly installed icons appear under the 🧩 Extensions menu.\n3. Click 'Refresh' here afterwards to update status.\n\n[If Install Fails / Doesn't Take Effect, Check]\n· Network/proxy can reach clients2.google.com\n· Extension is still listed on Chrome Web Store (non-store CRX must use Channel B)\n· Open chrome://policy in Chrome and click 'Reload policies'",
+        "dlg_need_admin_title": "Administrator Required",
+        "dlg_need_admin_msg": "Writing Chrome Group Policy requires Administrator privileges (Access Denied).\n\nRelaunch ExtKeeper as Administrator now?",
+        "log_removed_all": "Global removal policy set for %s (will uninstall from all profiles on Chrome restart).",
+        "log_removed_cancel": "Removed global uninstall policy for %s.",
+        "dlg_remove_choice_msg": "How would you like to remove %s?\n\n· Yes: Also set Chrome 'removed' policy to uninstall manually installed copies across ALL profiles (can still reinstall later)\n· No: Only remove from managed policy (uninstalls policy-managed copies only)",
+        "dlg_remove_manual_msg": "%s is manually installed (not in policy).\n\nSet Chrome 'removed' policy so it uninstalls from all profiles on next Chrome restart? (Can still reinstall later)",
+        "dlg_remove_undo_msg": "%s currently has a global 'removed' policy.\n\nRemove that uninstall policy so it can be installed normally again?",
         "log_bg_on": "Start in Tray enabled: launches silently into tray and hides on close.",
         "log_bg_off": "Start in Tray disabled: shows window on launch and exits on close.",
         "log_auto_sync_on": "Auto-Sync enabled: checking '%s' every minute for new Web Store extensions.",
@@ -332,7 +396,13 @@ I18N = {
         "log_not_in_store": "Not found on Web Store — use Channel B.",
         "log_dropped": "Loaded: %s",
         "log_failed": "Error: %s",
-        "log_chrome_running": "Chrome is running — fully exit Chrome (including tray) and reopen to apply.",
+        "log_chrome_running": "Chrome is running — click 'Close Chrome' to exit completely, reopen Chrome, and open each profile window to trigger install/removal (5–20s; new icons appear under the 🧩 Extensions menu).",
+        "log_apply_tip": "Tip: After launching Chrome, open each target profile window to trigger install/removal (unopened profiles won't download in background; takes ~5–20s; new icons appear under the 🧩 Extensions menu).",
+        "log_chrome_not_running": "Chrome is not currently running.",
+        "log_chrome_killed": "Closed all Chrome windows and background processes. Reopen Chrome and open each target profile window to apply policies.",
+        "log_chrome_kill_left": "Attempted to close Chrome, but some processes remain (try running as Admin).",
+        "log_chrome_kill_err": "Failed to close Chrome: %s",
+        "dlg_kill_chrome_msg": "Close all Chrome windows and background processes?\n\nExtKeeper will try a graceful close first to preserve tabs, then force-end remaining background processes.",
         "log_forced": "Force-installed: %s",
         "log_normal": "Set to normal_installed (user toggleable): %s",
         "log_removed": "Removed from policy: %s",
@@ -358,11 +428,11 @@ I18N = {
         "dlg_need_title": "Select an Extension",
         "dlg_need_msg": "Drop a .crx file, paste a URL / ID, or click a row in the table first.",
         "dlg_confirm": "Confirm",
-        "dlg_force_msg": "Force-install %s\ninto all %d Chrome profiles?\n\nForce-installed extensions cannot be disabled/removed manually and display 'Managed by your organization'.",
+        "dlg_force_msg": "Force-install %s\ninto all %d Chrome profiles?\n\n· Force-installed extensions cannot be disabled/removed manually and display 'Managed by your organization'\n· Restart Chrome completely and open each profile window to trigger download (~5–20s; icons appear under the 🧩 menu)",
         "dlg_clear_msg": "Clear all extension policies?\nOnly ExtensionInstallForcelist, ExtensionSettings, and ExtensionInstallSources will be removed.",
         "dlg_spread_none_title": "Nothing to Spread",
         "dlg_spread_none_msg": "This profile has no Chrome Web Store extensions.",
-        "dlg_spread_msg": "Force-install %d Web Store extension(s) from '%s' to all profiles?\n\n%s",
+        "dlg_spread_msg": "Force-install %d Web Store extension(s) from '%s' to all profiles?\n\n%s\n\nTip: Restart Chrome completely and open each profile window to trigger download.",
         "dlg_unpack_err_title": "Unpack Failed",
         "dlg_unpack_need_file": "Requires a .crx file or unpacked folder; an extension ID alone cannot be unpacked.",
         "dlg_local_need_sel": "Select an extension from the local pool list first.",
@@ -584,6 +654,31 @@ IMAGE_ICON = 1
 LR_LOADFROMFILE = 0x00000010
 IDI_APPLICATION = 32512
 ERROR_ALREADY_EXISTS = 183
+ERROR_CANCELLED = 1223
+SEE_MASK_NOCLOSEPROCESS = 0x00000040
+SW_HIDE = 0
+SW_SHOWNORMAL = 1
+INFINITE = 0xFFFFFFFF
+
+
+class SHELLEXECUTEINFOW(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wt.DWORD),
+        ("fMask", wt.ULONG),
+        ("hwnd", wt.HWND),
+        ("lpVerb", wt.LPCWSTR),
+        ("lpFile", wt.LPCWSTR),
+        ("lpParameters", wt.LPCWSTR),
+        ("lpDirectory", wt.LPCWSTR),
+        ("nShow", ctypes.c_int),
+        ("hInstApp", wt.HINSTANCE),
+        ("lpIDList", ctypes.c_void_p),
+        ("lpClass", wt.LPCWSTR),
+        ("hkeyClass", wt.HKEY),
+        ("dwHotKey", wt.DWORD),
+        ("hIconOrMonitor", wt.HANDLE),
+        ("hProcess", wt.HANDLE),
+    ]
 
 
 class GUID(ctypes.Structure):
@@ -708,6 +803,12 @@ user32.DestroyIcon.restype = wt.BOOL
 
 shell32.Shell_NotifyIconW.argtypes = [wt.DWORD, ctypes.POINTER(NOTIFYICONDATAW)]
 shell32.Shell_NotifyIconW.restype = wt.BOOL
+shell32.ShellExecuteExW.argtypes = [ctypes.POINTER(SHELLEXECUTEINFOW)]
+shell32.ShellExecuteExW.restype = wt.BOOL
+shell32.IsUserAnAdmin.argtypes = []
+shell32.IsUserAnAdmin.restype = wt.BOOL
+kernel32.WaitForSingleObject.argtypes = [wt.HANDLE, wt.DWORD]
+kernel32.WaitForSingleObject.restype = wt.DWORD
 
 WM_TASKBARCREATED = user32.RegisterWindowMessageW("TaskbarCreated")
 WM_SHOW_EXISTING = user32.RegisterWindowMessageW(SHOW_MSG_NAME)
@@ -738,6 +839,7 @@ class NativeTray:
     MENU_BG_MODE = 1005
     MENU_AUTO_SYNC = 1006
     MENU_LANG = 1007
+    MENU_KILL_CHROME = 1008
     MENU_QUIT = 1099
 
     def __init__(self, app, icon_path=""):
@@ -837,6 +939,7 @@ class NativeTray:
             user32.SetMenuDefaultItem(menu, self.MENU_SHOW, 0)
             user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
             user32.AppendMenuW(menu, MF_STRING, self.MENU_REFRESH, tr(lang, "tray_refresh"))
+            user32.AppendMenuW(menu, MF_STRING, self.MENU_KILL_CHROME, tr(lang, "tray_kill_chrome"))
             sync_flag = MF_STRING if st["has_source"] else (MF_STRING | MF_GRAYED)
             sync_txt = (
                 tr(lang, "tray_sync", st["source_label"])
@@ -887,6 +990,8 @@ class NativeTray:
             self.app.call_ui(self.app.toggle_window)
         elif cmd == self.MENU_REFRESH:
             self.app.call_ui(self.app.refresh)
+        elif cmd == self.MENU_KILL_CHROME:
+            self.app.call_ui(self.app.do_kill_chrome)
         elif cmd == self.MENU_SYNC_NOW:
             self.app.call_ui(self.app.sync_from_source, True)
         elif cmd == self.MENU_AUTOSTART:
@@ -1088,16 +1193,31 @@ def store_has(eid):
 
 # ============================================================ 配置 / 扩展
 
+def _profile_display_name(pdir, meta):
+    """优先取 Google 账户名，其次快捷方式名/配置名，最后回退目录名"""
+    if not isinstance(meta, dict):
+        return pdir
+    for key in ("gaia_name", "gaia_given_name", "shortcut_name", "name"):
+        val = (meta.get(key) or "").strip()
+        if val:
+            return val
+    return pdir
+
+
 def list_profiles():
     out = []
     info = {}
+    order = []
     try:
         with open(os.path.join(CHROME_DATA, "Local State"), encoding="utf-8") as f:
-            info = json.load(f).get("profile", {}).get("info_cache", {})
+            prof = json.load(f).get("profile", {}) or {}
+            info = prof.get("info_cache", {}) or {}
+            order = prof.get("profiles_order", []) or []
     except Exception:
         pass
     if not os.path.isdir(CHROME_DATA):
         return out
+    order_idx = {d: i for i, d in enumerate(order)}
     for d in os.listdir(CHROME_DATA):
         p = os.path.join(CHROME_DATA, d)
         if not os.path.isdir(p) or d in ("System Profile", "Guest Profile", "Guest Profile 2"):
@@ -1105,8 +1225,13 @@ def list_profiles():
         if not (os.path.exists(os.path.join(p, "Preferences"))
                 or os.path.exists(os.path.join(p, "Secure Preferences"))):
             continue
-        out.append((d, info.get(d, {}).get("name") or d))
-    out.sort(key=lambda x: (x[0] != "Default", x[0]))
+        out.append((d, _profile_display_name(d, info.get(d, {}))))
+    out.sort(key=lambda x: (
+        0 if x[0] in order_idx else 1,
+        order_idx.get(x[0], 0),
+        x[0] != "Default",
+        x[0],
+    ))
     return out
 
 
@@ -1122,7 +1247,14 @@ def read_extensions(profile_dir):
         except Exception:
             continue
         for eid, v in (d.get("extensions", {}).get("settings", {}) or {}).items():
+            if not isinstance(v, dict) or not v:
+                continue
+            loc = v.get("location")
+            path = v.get("path", "") or ""
             man = v.get("manifest", {}) or {}
+            # 过滤已卸载后留下的空壳条目（无 location、无 path、无 manifest）
+            if loc is None and not path and not man:
+                continue
             nm = man.get("name", "") or ""
             if nm.startswith("__MSG_"):
                 nm = ""
@@ -1132,13 +1264,40 @@ def read_extensions(profile_dir):
                 "name": nm or eid[:8],
                 "raw_name": nm,
                 "version": man.get("version", "") or "",
-                "location": v.get("location"),
-                "path": v.get("path", "") or "",
+                "location": loc,
+                "path": path,
             }
     return res
 
 
-# ============================================================ 组策略
+# ============================================================ 组策略与权限提权
+
+class ElevationCancelled(Exception):
+    """用户取消了 UAC 提权授权"""
+
+
+def is_admin():
+    try:
+        return bool(shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def can_write_policies():
+    """检测当前进程是否拥有写入 HKCU Chrome 组策略键的权限"""
+    for sub in (FORCELIST, POLICY, r"Software\Policies\Google", r"Software\Policies"):
+        try:
+            k = winreg.OpenKey(winreg.HKEY_CURRENT_USER, sub, 0, winreg.KEY_ALL_ACCESS)
+            winreg.CloseKey(k)
+            return True
+        except FileNotFoundError:
+            continue
+        except PermissionError:
+            return False
+        except OSError:
+            return False
+    return is_admin()
+
 
 def _enum_values(key):
     out = []
@@ -1152,80 +1311,22 @@ def _enum_values(key):
         i += 1
 
 
-def read_forcelist():
-    out = {}
+def _delete_value_if_exists(root, sub, value_name):
     try:
-        k = winreg.OpenKey(winreg.HKEY_CURRENT_USER, FORCELIST)
+        k = winreg.OpenKey(root, sub, 0, winreg.KEY_SET_VALUE)
     except FileNotFoundError:
-        return out
-    for n, v in _enum_values(k):
-        eid = str(v).split(";")[0].strip()
-        if eid:
-            out[eid] = str(n)
-    winreg.CloseKey(k)
-    return out
-
-
-def write_forcelist(ids):
-    k = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, FORCELIST, 0, winreg.KEY_ALL_ACCESS)
-    for n, _ in _enum_values(k):
-        try:
-            winreg.DeleteValue(k, n)
-        except OSError:
-            pass
-    for idx, eid in enumerate(ids, 1):
-        winreg.SetValueEx(k, str(idx), 0, winreg.REG_SZ, eid + ";" + STORE_URL)
-    winreg.CloseKey(k)
-
-
-def read_extsettings():
-    out = {}
+        return
     try:
-        k = winreg.OpenKey(winreg.HKEY_CURRENT_USER, EXTSET)
+        winreg.DeleteValue(k, value_name)
     except FileNotFoundError:
-        return out
-    i = 0
-    while True:
-        try:
-            sub = winreg.EnumKey(k, i)
-        except OSError:
-            break
-        i += 1
-        mode = "?"
-        try:
-            sk = winreg.OpenKey(k, sub)
-            try:
-                mode = winreg.QueryValueEx(sk, "installation_mode")[0]
-            except OSError:
-                pass
-            winreg.CloseKey(sk)
-        except OSError:
-            pass
-        out[sub] = mode
-    winreg.CloseKey(k)
-    return out
+        pass
+    finally:
+        winreg.CloseKey(k)
 
 
-def set_normal_installed(eid):
-    k = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, EXTSET + "\\" + eid, 0,
-                           winreg.KEY_ALL_ACCESS)
-    winreg.SetValueEx(k, "installation_mode", 0, winreg.REG_SZ, "normal_installed")
-    winreg.SetValueEx(k, "update_url", 0, winreg.REG_SZ, STORE_URL)
-    winreg.CloseKey(k)
-
-
-def allow_local_sources():
-    """允许从 file:// 装 crx（Chrome 默认禁止非商店来源）"""
-    k = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, INSTALL_SOURCES, 0,
-                           winreg.KEY_ALL_ACCESS)
-    winreg.SetValueEx(k, "1", 0, winreg.REG_SZ, "file:///*")
-    winreg.SetValueEx(k, "2", 0, winreg.REG_SZ, "http://localhost/*")
-    winreg.CloseKey(k)
-
-
-def del_tree(sub):
+def _del_tree_in(root, sub):
     try:
-        k = winreg.OpenKey(winreg.HKEY_CURRENT_USER, sub, 0, winreg.KEY_ALL_ACCESS)
+        k = winreg.OpenKey(root, sub, 0, winreg.KEY_ALL_ACCESS)
     except FileNotFoundError:
         return
     subs = []
@@ -1238,11 +1339,383 @@ def del_tree(sub):
         i += 1
     winreg.CloseKey(k)
     for s in subs:
-        del_tree(sub + "\\" + s)
+        _del_tree_in(root, sub + "\\" + s)
     try:
-        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, sub)
+        winreg.DeleteKey(root, sub)
+    except FileNotFoundError:
+        pass
+
+
+def del_tree(sub):
+    _del_tree_in(winreg.HKEY_CURRENT_USER, sub)
+
+
+def has_hklm_ext_policies():
+    """检测 HKLM 下是否存在会覆盖 HKCU 的旧扩展策略（仅检查扩展相关三项）"""
+    for sub in (FORCELIST, EXTSET, INSTALL_SOURCES):
+        try:
+            k = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, sub)
+            winreg.CloseKey(k)
+            return True
+        except OSError:
+            pass
+    try:
+        k = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, POLICY)
+        try:
+            for vname in ("ExtensionSettings", "ExtensionInstallSources"):
+                try:
+                    winreg.QueryValueEx(k, vname)
+                    return True
+                except OSError:
+                    pass
+        finally:
+            winreg.CloseKey(k)
     except OSError:
         pass
+    return False
+
+
+def clean_hklm_ext_policies():
+    """清理 HKLM 下冲突的扩展三项策略（绝不触碰 WebRTC/DNS 等其他策略）"""
+    _del_tree_in(winreg.HKEY_LOCAL_MACHINE, FORCELIST)
+    _del_tree_in(winreg.HKEY_LOCAL_MACHINE, EXTSET)
+    _del_tree_in(winreg.HKEY_LOCAL_MACHINE, INSTALL_SOURCES)
+    _delete_value_if_exists(winreg.HKEY_LOCAL_MACHINE, POLICY, "ExtensionSettings")
+    _delete_value_if_exists(winreg.HKEY_LOCAL_MACHINE, POLICY, "ExtensionInstallSources")
+
+
+def _read_forcelist_entries(root=winreg.HKEY_CURRENT_USER):
+    """返回 {eid: full_value}，保留原始 update_url"""
+    out = {}
+    try:
+        k = winreg.OpenKey(root, FORCELIST)
+    except OSError:
+        return out
+    try:
+        for _, v in _enum_values(k):
+            raw = str(v).strip()
+            eid = raw.split(";")[0].strip()
+            if eid:
+                out[eid] = raw
+    finally:
+        winreg.CloseKey(k)
+    return out
+
+
+def read_forcelist():
+    """读取当前强制安装列表（合并展示 HKCU 与可能存在的 HKLM 冲突项）"""
+    out = {}
+    for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        try:
+            k = winreg.OpenKey(root, FORCELIST)
+        except OSError:
+            continue
+        try:
+            for n, v in _enum_values(k):
+                eid = str(v).split(";")[0].strip()
+                if eid and eid not in out:
+                    out[eid] = str(n)
+        finally:
+            winreg.CloseKey(k)
+    return out
+
+
+def _read_extsettings_dict(root=winreg.HKEY_CURRENT_USER):
+    """读取 Chrome ExtensionSettings（兼容官方 REG_SZ JSON 值与旧子键结构）"""
+    merged = {}
+    # 1. 先读旧子键结构
+    try:
+        k = winreg.OpenKey(root, EXTSET)
+        try:
+            i = 0
+            while True:
+                try:
+                    sub = winreg.EnumKey(k, i)
+                except OSError:
+                    break
+                i += 1
+                item = {}
+                try:
+                    sk = winreg.OpenKey(k, sub)
+                    try:
+                        for vn, vv in _enum_values(sk):
+                            item[vn] = vv
+                    finally:
+                        winreg.CloseKey(sk)
+                except OSError:
+                    pass
+                if item:
+                    merged[sub] = item
+        finally:
+            winreg.CloseKey(k)
+    except OSError:
+        pass
+
+    # 2. 再读官方 REG_SZ JSON 字符串值（优先级更高，覆盖同名项）
+    try:
+        pk = winreg.OpenKey(root, POLICY)
+        try:
+            raw, _ = winreg.QueryValueEx(pk, "ExtensionSettings")
+            if isinstance(raw, str) and raw.strip():
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    for eid, cfg in parsed.items():
+                        if isinstance(cfg, dict):
+                            merged[eid] = cfg
+        except (OSError, ValueError, TypeError):
+            pass
+        finally:
+            winreg.CloseKey(pk)
+    except OSError:
+        pass
+
+    return merged
+
+
+def _write_extsettings_dict(data):
+    """以 Chrome 官方标准 REG_SZ JSON 格式写入 ExtensionSettings，并清理冲突子键"""
+    _del_tree_in(winreg.HKEY_CURRENT_USER, EXTSET)
+    clean = {k: v for k, v in (data or {}).items() if isinstance(v, dict) and v}
+    if not clean:
+        _delete_value_if_exists(winreg.HKEY_CURRENT_USER, POLICY, "ExtensionSettings")
+        return
+    k = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, POLICY, 0, winreg.KEY_ALL_ACCESS)
+    try:
+        winreg.SetValueEx(
+            k, "ExtensionSettings", 0, winreg.REG_SZ,
+            json.dumps(clean, ensure_ascii=False, separators=(",", ":")),
+        )
+    finally:
+        winreg.CloseKey(k)
+
+
+def write_forcelist(ids, preserve_urls=None):
+    """写入 HKCU ExtensionInstallForcelist；若列表为空则清理该键"""
+    existing = _read_forcelist_entries(winreg.HKEY_CURRENT_USER)
+    if preserve_urls:
+        existing.update(preserve_urls)
+    unique_ids = []
+    for eid in ids:
+        eid = (eid or "").strip()
+        if eid and eid not in unique_ids:
+            unique_ids.append(eid)
+    if not unique_ids:
+        _del_tree_in(winreg.HKEY_CURRENT_USER, FORCELIST)
+        return
+    k = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, FORCELIST, 0, winreg.KEY_ALL_ACCESS)
+    try:
+        for n, _ in _enum_values(k):
+            try:
+                winreg.DeleteValue(k, n)
+            except OSError:
+                pass
+        for idx, eid in enumerate(unique_ids, 1):
+            val = existing.get(eid) or (eid + ";" + STORE_URL)
+            winreg.SetValueEx(k, str(idx), 0, winreg.REG_SZ, val)
+    finally:
+        winreg.CloseKey(k)
+
+
+def read_extsettings():
+    """返回 {eid: installation_mode}（同时读取 HKCU 与 HKLM）"""
+    out = {}
+    for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        for eid, cfg in _read_extsettings_dict(root).items():
+            if eid not in out:
+                out[eid] = cfg.get("installation_mode", "?")
+    return out
+
+
+def set_normal_installed(eid):
+    cur = _read_extsettings_dict(winreg.HKEY_CURRENT_USER)
+    cur[eid] = {
+        "installation_mode": "normal_installed",
+        "update_url": STORE_URL,
+    }
+    _write_extsettings_dict(cur)
+
+
+def set_removed_policy(eid):
+    cur = _read_extsettings_dict(winreg.HKEY_CURRENT_USER)
+    cur[eid] = {"installation_mode": "removed"}
+    _write_extsettings_dict(cur)
+
+
+def del_extsetting_item(eid):
+    cur = _read_extsettings_dict(winreg.HKEY_CURRENT_USER)
+    if eid in cur:
+        del cur[eid]
+    _write_extsettings_dict(cur)
+
+
+def allow_local_sources():
+    """允许从 file:// 装 crx（Chrome 默认禁止非商店来源），清理父键同名旧值防冲突"""
+    _delete_value_if_exists(winreg.HKEY_CURRENT_USER, POLICY, "ExtensionInstallSources")
+    k = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, INSTALL_SOURCES, 0,
+                           winreg.KEY_ALL_ACCESS)
+    try:
+        winreg.SetValueEx(k, "1", 0, winreg.REG_SZ, "file:///*")
+        winreg.SetValueEx(k, "2", 0, winreg.REG_SZ, "http://localhost/*")
+    finally:
+        winreg.CloseKey(k)
+
+
+def clear_all_policies_direct():
+    """清空 HKCU 与 HKLM 下的扩展三项策略（不动其他浏览器策略）"""
+    _del_tree_in(winreg.HKEY_CURRENT_USER, FORCELIST)
+    _del_tree_in(winreg.HKEY_CURRENT_USER, EXTSET)
+    _del_tree_in(winreg.HKEY_CURRENT_USER, INSTALL_SOURCES)
+    _delete_value_if_exists(winreg.HKEY_CURRENT_USER, POLICY, "ExtensionSettings")
+    _delete_value_if_exists(winreg.HKEY_CURRENT_USER, POLICY, "ExtensionInstallSources")
+    if has_hklm_ext_policies():
+        clean_hklm_ext_policies()
+
+
+def _execute_policy_ops_direct(ops):
+    """直接执行一组策略变更操作"""
+    for op in ops:
+        act = op.get("op")
+        if act == "write_forcelist":
+            write_forcelist(op.get("ids", []), op.get("preserve_urls"))
+        elif act == "set_normal":
+            set_normal_installed(op["id"])
+        elif act == "set_removed":
+            set_removed_policy(op["id"])
+        elif act == "del_extset":
+            del_extsetting_item(op["id"])
+        elif act == "allow_local_sources":
+            allow_local_sources()
+        elif act == "clear_all":
+            clear_all_policies_direct()
+        elif act == "clean_hklm":
+            if has_hklm_ext_policies():
+                clean_hklm_ext_policies()
+
+
+def _run_elevated_policy_ops(ops, hwnd=None):
+    """通过 UAC 提权子进程原子执行策略变更并等待结果"""
+    req_fd, req_path = tempfile.mkstemp(prefix="extkeeper_req_", suffix=".json")
+    res_fd, res_path = tempfile.mkstemp(prefix="extkeeper_res_", suffix=".json")
+    os.close(req_fd)
+    os.close(res_fd)
+    try:
+        with open(req_path, "w", encoding="utf-8") as f:
+            json.dump({"ops": ops}, f, ensure_ascii=False)
+
+        if IS_FROZEN:
+            exe = os.path.abspath(sys.executable)
+            params = '--apply-policy "%s" "%s"' % (req_path, res_path)
+        else:
+            exe = get_pythonw_path()
+            params = '"%s" --apply-policy "%s" "%s"' % (
+                os.path.abspath(__file__), req_path, res_path
+            )
+
+        sei = SHELLEXECUTEINFOW()
+        sei.cbSize = ctypes.sizeof(SHELLEXECUTEINFOW)
+        sei.fMask = SEE_MASK_NOCLOSEPROCESS
+        sei.hwnd = hwnd
+        sei.lpVerb = "runas"
+        sei.lpFile = exe
+        sei.lpParameters = params
+        sei.lpDirectory = HERE
+        sei.nShow = SW_HIDE
+
+        if not shell32.ShellExecuteExW(ctypes.byref(sei)):
+            err = kernel32.GetLastError()
+            if err == ERROR_CANCELLED:
+                raise ElevationCancelled()
+            raise OSError(err, "ShellExecuteExW failed (code %d)" % err)
+
+        if sei.hProcess:
+            try:
+                kernel32.WaitForSingleObject(sei.hProcess, 30000)
+            finally:
+                kernel32.CloseHandle(sei.hProcess)
+
+        if os.path.exists(res_path) and os.path.getsize(res_path) > 0:
+            with open(res_path, encoding="utf-8") as f:
+                res = json.load(f)
+            if not res.get("ok"):
+                raise RuntimeError(res.get("error") or "Elevated policy update failed")
+            return
+        raise RuntimeError("Elevated helper exited without writing result")
+    finally:
+        for fp in (req_path, res_path):
+            try:
+                os.remove(fp)
+            except OSError:
+                pass
+
+
+def apply_policy_ops(ops, hwnd=None, allow_uac=True):
+    """执行策略变更：优先直接写入；遇权限不足或 HKLM 冲突则自动按需走 UAC 提权执行"""
+    full_ops = list(ops)
+    need_hklm_clean = has_hklm_ext_policies() and not any(o.get("op") == "clear_all" for o in full_ops)
+    if need_hklm_clean:
+        full_ops.append({"op": "clean_hklm"})
+
+    need_admin = (not can_write_policies()) or has_hklm_ext_policies()
+    if not need_admin:
+        try:
+            _execute_policy_ops_direct(full_ops)
+            return
+        except PermissionError:
+            pass
+
+    if not allow_uac:
+        raise PermissionError("Administrator privileges required to modify Chrome policies")
+    _run_elevated_policy_ops(full_ops, hwnd=hwnd)
+
+
+def _handle_apply_policy_cli(argv):
+    """提权子进程专用入口：执行完 JSON 中的策略操作后立刻写结果并退出"""
+    try:
+        idx = argv.index("--apply-policy")
+    except ValueError:
+        return False
+    if idx + 2 >= len(argv):
+        return True
+    req_path, res_path = argv[idx + 1], argv[idx + 2]
+    try:
+        with open(req_path, encoding="utf-8") as f:
+            payload = json.load(f)
+        _execute_policy_ops_direct(payload.get("ops", []))
+        res = {"ok": True}
+    except Exception as e:
+        res = {"ok": False, "error": str(e)}
+    try:
+        with open(res_path, "w", encoding="utf-8") as f:
+            json.dump(res, f, ensure_ascii=False)
+    except Exception:
+        pass
+    return True
+
+
+def relaunch_as_admin(hwnd=None):
+    """以管理员身份重新启动主界面"""
+    if IS_FROZEN:
+        exe = os.path.abspath(sys.executable)
+        params = "--show"
+    else:
+        exe = get_pythonw_path()
+        params = '"%s" --show' % os.path.abspath(__file__)
+
+    sei = SHELLEXECUTEINFOW()
+    sei.cbSize = ctypes.sizeof(SHELLEXECUTEINFOW)
+    sei.fMask = 0
+    sei.hwnd = hwnd
+    sei.lpVerb = "runas"
+    sei.lpFile = exe
+    sei.lpParameters = params
+    sei.lpDirectory = HERE
+    sei.nShow = SW_SHOWNORMAL
+    if not shell32.ShellExecuteExW(ctypes.byref(sei)):
+        err = kernel32.GetLastError()
+        if err == ERROR_CANCELLED:
+            return False
+        raise OSError(err, "ShellExecuteExW failed (code %d)" % err)
+    return True
 
 
 # ============================================================ 本地扩展池
@@ -1336,6 +1809,38 @@ def chrome_running():
     return found
 
 
+def kill_chrome_processes():
+    """先温和关闭 Chrome 窗口保留会话，再强制结束残留后台进程；返回是否已全部关闭"""
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    if not chrome_running():
+        return True
+    try:
+        subprocess.run(
+            ["taskkill", "/IM", "chrome.exe"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=flags, timeout=5,
+        )
+    except Exception:
+        pass
+    for _ in range(15):
+        if not chrome_running():
+            return True
+        time.sleep(0.1)
+    try:
+        subprocess.run(
+            ["taskkill", "/IM", "chrome.exe", "/F", "/T"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=flags, timeout=8,
+        )
+    except Exception:
+        pass
+    for _ in range(10):
+        if not chrome_running():
+            return True
+        time.sleep(0.1)
+    return not chrome_running()
+
+
 def chrome_version():
     try:
         with open(os.path.join(CHROME_DATA, "Last Version"), encoding="utf-8") as f:
@@ -1392,9 +1897,10 @@ F_MONO = ("Consolas", 9)
 
 class App:
     def __init__(self, root, start_hidden=False, launched_by_autostart=False,
-                 icon_path="", lang_override=None):
+                 icon_path="", lang_override=None, mutex_ref=None):
         self.root = root
         self.icon_path = icon_path
+        self._mutex_ref = mutex_ref if mutex_ref is not None else [None]
         self.settings = load_settings()
         self.lang_mode = lang_override or self.settings.get("language", "auto")
         self.lang = resolve_lang(self.lang_mode)
@@ -1411,6 +1917,8 @@ class App:
         self._notified_tray_hide = False
         self._quitting = False
         self._query_seq = 0
+        self._policy_writable = can_write_policies()
+        self._hklm_conflict = has_hklm_ext_policies()
 
         self.show_builtin = tk.BooleanVar(value=False)
         self.autostart_var = tk.BooleanVar(value=is_autostart_enabled())
@@ -1436,6 +1944,11 @@ class App:
 
         self._apply_language(refresh_data=False)
         self.refresh()
+
+        if not self._policy_writable:
+            self.log(self.t("log_need_admin"), "warn")
+        if self._hklm_conflict:
+            self.log(self.t("log_hklm_conflict"), "warn")
 
         if self._hidden:
             self.root.withdraw()
@@ -1478,6 +1991,7 @@ class App:
         self.spread_btn.configure(text=self.t("btn_spread"))
         self.auto_sync_chk.configure(text=self.t("chk_auto_sync"))
         self.builtin_chk.configure(text=self.t("chk_builtin"))
+        self.kill_chrome_btn.configure(text=self.t("btn_kill_chrome"))
         self.clear_btn.configure(text=self.t("btn_clear"))
 
         self.left_title_lb.configure(text=self.t("left_title"))
@@ -1495,6 +2009,7 @@ class App:
         self.open_pages_btn.configure(text=self.t("btn_open_pages"))
 
         self.log_title_lb.configure(text=self.t("log_title"))
+        self.elevate_btn.configure(text=self.t("btn_elevate"))
         self.autostart_chk.configure(text=self.t("chk_autostart"))
         self.bg_mode_chk.configure(text=self.t("chk_bg_mode"))
         self.hide_tray_btn.configure(text=self.t("btn_hide_tray"))
@@ -1695,7 +2210,10 @@ class App:
                 self.tray.notify(self.t("app_short"), self.t("notify_no_source"))
             return 0
         exts = read_extensions(src_dir)
-        store_ids = [e for e, i in exts.items() if i.get("location") == 1]
+        store_ids = [
+            e for e, i in exts.items()
+            if i.get("location") in (1, 6, 7) and e not in BUILTIN_IDS
+        ]
         cur_force = read_forcelist()
         cur_extset = read_extsettings()
         missing = [e for e in store_ids if e not in cur_force and e not in cur_extset]
@@ -1707,7 +2225,19 @@ class App:
             return 0
 
         new_ids = list(cur_force.keys()) + missing
-        write_forcelist(new_ids)
+        try:
+            apply_policy_ops(
+                [{"op": "write_forcelist", "ids": new_ids}],
+                hwnd=self._hwnd(),
+                allow_uac=interactive,
+            )
+        except ElevationCancelled:
+            self.log(self.t("log_uac_cancelled"), "warn")
+            return 0
+        except Exception as e:
+            if interactive:
+                self.log(self.t("log_policy_err", e), "warn")
+            return 0
         names = [exts[e]["name"] for e in missing[:3]]
         summary = self.t("sep_list").join(names) + (self.t("etc_more") if len(missing) > 3 else "")
         if self.lang == "en":
@@ -1838,6 +2368,8 @@ class App:
         self.clear_btn = ttk.Button(bar, text="", style="Danger.TButton",
                                     command=self.do_clear)
         self.clear_btn.pack(side="right")
+        self.kill_chrome_btn = ttk.Button(bar, text="", command=self.do_kill_chrome)
+        self.kill_chrome_btn.pack(side="right", padx=(0, 6))
 
         body = tk.Frame(outer, bg=C_BG)
         body.pack(fill="both", expand=True)
@@ -1944,6 +2476,12 @@ class App:
             command=lambda: self.hide_to_tray(notify_first=True),
         )
         self.hide_tray_btn.pack(side="right")
+        self.elevate_btn = ttk.Button(
+            fh, text="", style="CardGhost.TButton",
+            command=self.do_relaunch_admin,
+        )
+        if not self._policy_writable:
+            self.elevate_btn.pack(side="right", padx=(0, 8))
         self.bg_mode_chk = ttk.Checkbutton(
             fh, text="", style="Card.TCheckbutton",
             variable=self.start_in_bg_var, command=self.on_toggle_bg_mode,
@@ -2008,10 +2546,13 @@ class App:
         entry = self.ext_map.get(eid)
         name = entry["name"] if entry else ""
         ver = entry["info"].get("version", "") if entry else ""
-        if eid in self.force:
+        mode = self.extset.get(eid)
+        if eid in self.force or mode == "force_installed":
             kind_key = "kind_policy_force"
-        elif eid in self.extset:
+        elif mode == "normal_installed":
             kind_key = "kind_policy_normal"
+        elif mode in ("removed", "blocked"):
+            kind_key = "kind_policy_removed"
         elif entry and entry["info"].get("location") == 1:
             kind_key = "kind_store"
         else:
@@ -2028,6 +2569,51 @@ class App:
         self.log(self.t("log_copied_id", eid))
 
     # -------------------------------------------------- 数据与渲染
+
+    def _hwnd(self):
+        try:
+            return int(self.root.winfo_id())
+        except Exception:
+            return None
+
+    def _run_policy_ops(self, ops):
+        """执行策略变更（必要时自动 UAC 提权），返回是否成功"""
+        try:
+            apply_policy_ops(ops, hwnd=self._hwnd(), allow_uac=True)
+            return True
+        except ElevationCancelled:
+            self.log(self.t("log_uac_cancelled"), "warn")
+            return False
+        except Exception as e:
+            self.log(self.t("log_policy_err", e), "warn")
+            messagebox.showwarning(
+                self.t("dlg_policy_err_title"),
+                self.t("dlg_policy_err_detail", e),
+            )
+            return False
+
+    def do_relaunch_admin(self):
+        """释放单实例锁并以管理员身份重启主窗口"""
+        self._persist_settings()
+        hm = self._mutex_ref[0]
+        if hm:
+            try:
+                kernel32.CloseHandle(hm)
+            except Exception:
+                pass
+            self._mutex_ref[0] = None
+        try:
+            launched = relaunch_as_admin(hwnd=self._hwnd())
+        except Exception as e:
+            self._mutex_ref[0] = acquire_single_instance(wake_existing=False)
+            self.log(self.t("log_policy_err", e), "warn")
+            messagebox.showwarning(self.t("dlg_need_admin_title"), str(e))
+            return
+        if launched:
+            self.quit_app()
+        else:
+            self._mutex_ref[0] = acquire_single_instance(wake_existing=False)
+            self.log(self.t("log_uac_cancelled"), "warn")
 
     def log(self, msg, kind=None):
         self.logbox.insert("end", time.strftime("%H:%M:%S  "), "ts")
@@ -2048,6 +2634,8 @@ class App:
                 d["where"][pdir] = info
         self.force = read_forcelist()
         self.extset = read_extsettings()
+        self._policy_writable = can_write_policies()
+        self._hklm_conflict = has_hklm_ext_policies()
         self.autostart_var.set(is_autostart_enabled())
 
         prev_dir, _ = self._current_source_profile()
@@ -2073,11 +2661,16 @@ class App:
             where = self.ext_map.get(eid, {}).get("where", {})
             if sum(1 for d, _ in self.profiles if d in where) < total:
                 stuck += 1
-        parts = [self.t("pill_profiles", total), self.t("pill_policies", len(self.force) + len(self.extset))]
+        pol_ids = set(self.force.keys()) | set(self.extset.keys())
+        parts = [self.t("pill_profiles", total), self.t("pill_policies", len(pol_ids))]
         if stuck:
             parts.append(self.t("pill_missing", stuck))
         if self.pool:
             parts.append(self.t("pill_local", len(self.pool)))
+        if self._hklm_conflict:
+            parts.append(self.t("pill_hklm_conflict"))
+        if not self._policy_writable:
+            parts.append(self.t("pill_non_admin"))
         run = chrome_running()
         parts.append(self.t("pill_chrome_on" if run else "pill_chrome_off"))
         return parts, run
@@ -2091,9 +2684,10 @@ class App:
 
     def render_status(self):
         parts, run = self._build_status_parts()
+        warn = run or self._hklm_conflict or (not self._policy_writable)
         self.pill.configure(text=" · ".join(parts),
-                            bg="#FDF1E3" if run else "#E8F5EE",
-                            fg=C_AMBER if run else C_GREEN)
+                            bg="#FDF1E3" if warn else "#E8F5EE",
+                            fg=C_AMBER if warn else C_GREEN)
         self.ver_lb.configure(text=chrome_version())
         self._update_tray_tooltip()
 
@@ -2123,7 +2717,7 @@ class App:
 
     def _apply_profile_headings(self, pw):
         dup = self._dup_profile_names()
-        max_units = max(4, (pw - 12) // 8)
+        max_units = max(6, (pw - 8) // 6)
         for i, (d, n) in enumerate(self.profiles):
             label = profile_header_label(d, n, dup)
             shown = _fit_text(label, max_units)
@@ -2141,6 +2735,18 @@ class App:
             self.tree.column("pol", width=pol_w)
         except Exception:
             pass
+
+    def _policy_tag(self, eid):
+        mode = self.extset.get(eid)
+        if eid in self.force or mode == "force_installed":
+            return self.t("tag_force")
+        if mode == "normal_installed":
+            return self.t("tag_normal")
+        if mode == "removed":
+            return self.t("tag_removed")
+        if mode == "blocked":
+            return self.t("tag_blocked")
+        return ""
 
     def render(self):
         profs = [p[0] for p in self.profiles]
@@ -2162,21 +2768,29 @@ class App:
         rows = []
         for eid, d in self.ext_map.items():
             loc = d["info"].get("location")
-            forced = eid in self.force
-            normal = self.extset.get(eid) in ("normal_installed", "force_installed")
-            if loc in HIDDEN_LOC and not (forced or normal) and not self.show_builtin.get():
+            tag = self._policy_tag(eid)
+            if (loc in HIDDEN_LOC or eid in BUILTIN_IDS) and not tag and not self.show_builtin.get():
                 continue
-            cells = ["●" if p in d["where"] else "○" for p in profs]
-            tag = self.t("tag_force") if forced else (self.t("tag_normal") if normal else "")
+            mode = self.extset.get(eid)
+            want_install = (eid in self.force) or (mode in ("force_installed", "normal_installed"))
+            want_remove = mode in ("removed", "blocked")
+            cells = []
+            for p in profs:
+                if p in d["where"]:
+                    cells.append("✕" if want_remove else "●")
+                else:
+                    cells.append("◐" if want_install else "○")
             short = (eid[:8] + "…") if len(eid) > 8 else eid
             rows.append((d["name"], eid, short, cells, tag))
 
         for eid in list(self.force.keys()) + [e for e in self.extset if e not in self.force]:
             if eid in self.ext_map:
                 continue
+            mode = self.extset.get(eid)
+            want_install = (eid in self.force) or (mode in ("force_installed", "normal_installed"))
             rows.append((self.t("unlanded") + eid[:8], eid, eid[:8] + "…",
-                         ["○"] * len(profs),
-                         self.t("tag_force") if eid in self.force else self.t("tag_normal")))
+                         ["◐" if want_install else "○"] * len(profs),
+                         self._policy_tag(eid)))
 
         rows.sort(key=lambda r: r[0].lower())
         for idx, (name, eid, short, cells, tag) in enumerate(rows):
@@ -2202,6 +2816,7 @@ class App:
             "kind_local": C_AMBER,
             "kind_policy_force": C_ACCENT,
             "kind_policy_normal": C_GREEN,
+            "kind_policy_removed": C_RED,
         }.get(kind_key, C_TEXT)
         line1 = "%s · %s  v%s" % (kind_label, p["name"] or self.t("unnamed"), p["version"] or "?")
         line1 = _fit_text(line1, 30)
@@ -2288,59 +2903,181 @@ class App:
             return None
         return self.pending
 
-    def _after(self):
-        if chrome_running():
-            self.log(self.t("log_chrome_running"))
+    def _check_channel_a_eligible(self, p):
+        """通道 A 写入前校验：非商店扩展直接拦截提示，网络不可达时提醒确认"""
+        label = p["name"] or p["id"]
+        kind_key = p.get("kind_key")
+        if kind_key == "kind_local":
+            self.log(self.t("log_not_in_store"), "warn")
+            messagebox.showwarning(
+                self.t("dlg_store_missing_title"),
+                self.t("dlg_store_missing_msg", label),
+            )
+            return False
+        if kind_key == "kind_failed":
+            return messagebox.askyesno(
+                self.t("dlg_store_net_title"),
+                self.t("dlg_store_net_msg", label),
+            )
+        return True
+
+    def _after(self, summary_msg=None):
+        running = chrome_running()
+        if running:
+            self.log(self.t("log_chrome_running"), "warn")
+        else:
+            self.log(self.t("log_apply_tip"))
         self.refresh()
+        if summary_msg:
+            body_key = "dlg_apply_ok_chrome_on" if running else "dlg_apply_ok_chrome_off"
+            messagebox.showinfo(
+                self.t("dlg_apply_ok_title"),
+                self.t(body_key, summary_msg),
+            )
 
     def do_force(self):
         p = self._need()
         if not p:
+            return
+        if not self._check_channel_a_eligible(p):
             return
         if not messagebox.askokcancel(
             self.t("dlg_confirm"),
             self.t("dlg_force_msg", p["name"] or p["id"], len(self.profiles)),
         ):
             return
-        ids = list(self.force.keys())
+        ids = list(_read_forcelist_entries(winreg.HKEY_CURRENT_USER).keys())
         if p["id"] not in ids:
             ids.append(p["id"])
-        write_forcelist(ids)
+        ops = [{"op": "write_forcelist", "ids": ids}]
         if p["id"] in self.extset:
-            del_tree(EXTSET + "\\" + p["id"])
-        self.log(self.t("log_forced", p["id"]))
-        self._after()
+            ops.append({"op": "del_extset", "id": p["id"]})
+        if not self._run_policy_ops(ops):
+            return
+        msg = self.t("log_forced", p["name"] or p["id"])
+        self.log(msg)
+        self._after(msg)
 
     def do_normal(self):
         p = self._need()
         if not p:
             return
-        set_normal_installed(p["id"])
-        if p["id"] in self.force:
-            write_forcelist([i for i in self.force if i != p["id"]])
-        self.log(self.t("log_normal", p["id"]))
-        self._after()
+        if not self._check_channel_a_eligible(p):
+            return
+        ops = [{"op": "set_normal", "id": p["id"]}]
+        cur_force = list(_read_forcelist_entries(winreg.HKEY_CURRENT_USER).keys())
+        if p["id"] in cur_force:
+            ops.append({"op": "write_forcelist", "ids": [i for i in cur_force if i != p["id"]]})
+        if not self._run_policy_ops(ops):
+            return
+        msg = self.t("log_normal", p["name"] or p["id"])
+        self.log(msg)
+        self._after(msg)
 
     def do_remove(self):
         p = self._need()
         if not p:
             return
-        if p["id"] in self.force:
-            write_forcelist([i for i in self.force if i != p["id"]])
-        if p["id"] in self.extset:
-            del_tree(EXTSET + "\\" + p["id"])
-        self.log(self.t("log_removed", p["id"]))
-        self.log(self.t("log_removed_hint"))
-        self._after()
+        eid = p["id"]
+        label = p["name"] or eid
+        cur_force = list(_read_forcelist_entries(winreg.HKEY_CURRENT_USER).keys())
+        in_force = (eid in cur_force) or (eid in self.force)
+        mode = self.extset.get(eid)
+
+        # 若当前已在全局卸载策略中，点击可撤回该卸载策略
+        if mode == "removed" and not in_force:
+            if not messagebox.askokcancel(
+                self.t("dlg_confirm"),
+                self.t("dlg_remove_undo_msg", label),
+            ):
+                return
+            if not self._run_policy_ops([{"op": "del_extset", "id": eid}]):
+                return
+            msg = self.t("log_removed_cancel", label)
+            self.log(msg)
+            self._after(msg)
+            return
+
+        ops = []
+        if in_force or (mode and mode != "removed"):
+            ans = messagebox.askyesnocancel(
+                self.t("dlg_confirm"),
+                self.t("dlg_remove_choice_msg", label),
+            )
+            if ans is None:
+                return
+            if eid in cur_force:
+                ops.append({"op": "write_forcelist", "ids": [i for i in cur_force if i != eid]})
+            if ans:
+                ops.append({"op": "set_removed", "id": eid})
+            else:
+                ops.append({"op": "del_extset", "id": eid})
+            if not self._run_policy_ops(ops):
+                return
+            if ans:
+                msg = self.t("log_removed_all", label)
+                self.log(msg)
+            else:
+                msg = self.t("log_removed", label)
+                self.log(msg)
+                self.log(self.t("log_removed_hint"))
+            self._after(msg)
+            return
+
+        # 纯手动安装的扩展：写入 Chrome 'removed' 策略实现全配置卸载
+        if not messagebox.askokcancel(
+            self.t("dlg_confirm"),
+            self.t("dlg_remove_manual_msg", label),
+        ):
+            return
+        if not self._run_policy_ops([{"op": "set_removed", "id": eid}]):
+            return
+        msg = self.t("log_removed_all", label)
+        self.log(msg)
+        self._after(msg)
 
     def do_clear(self):
         if not messagebox.askokcancel(self.t("dlg_confirm"), self.t("dlg_clear_msg")):
             return
-        del_tree(FORCELIST)
-        del_tree(EXTSET)
-        del_tree(INSTALL_SOURCES)
-        self.log(self.t("log_cleared"))
-        self._after()
+        if not self._run_policy_ops([{"op": "clear_all"}]):
+            return
+        msg = self.t("log_cleared")
+        self.log(msg)
+        self._after(msg)
+
+    def do_kill_chrome(self):
+        if not chrome_running():
+            self.log(self.t("log_chrome_not_running"))
+            self.render_status()
+            return
+        if not messagebox.askokcancel(self.t("dlg_confirm"), self.t("dlg_kill_chrome_msg")):
+            return
+        self.kill_chrome_btn.configure(state="disabled")
+
+        def worker():
+            err = None
+            ok = False
+            try:
+                ok = kill_chrome_processes()
+            except Exception as e:
+                err = e
+
+            def done():
+                try:
+                    self.kill_chrome_btn.configure(state="normal")
+                except Exception:
+                    pass
+                if err is not None:
+                    self.log(self.t("log_chrome_kill_err", err), "warn")
+                elif ok:
+                    self.log(self.t("log_chrome_killed"))
+                else:
+                    self.log(self.t("log_chrome_kill_left"), "warn")
+                self.refresh()
+
+            self.call_ui(done)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def do_spread(self):
         idx = self.src_box.current()
@@ -2348,7 +3085,10 @@ class App:
             return
         pdir, pname = self.profiles[idx]
         exts = read_extensions(pdir)
-        ids = [e for e, i in exts.items() if i.get("location") == 1]
+        ids = [
+            e for e, i in exts.items()
+            if i.get("location") in (1, 6, 7) and e not in BUILTIN_IDS
+        ]
         if not ids:
             messagebox.showinfo(self.t("dlg_spread_none_title"), self.t("dlg_spread_none_msg"))
             return
@@ -2360,14 +3100,20 @@ class App:
         )
         if not messagebox.askokcancel(self.t("dlg_confirm"), msg):
             return
-        cur = list(self.force.keys())
+        cur = list(_read_forcelist_entries(winreg.HKEY_CURRENT_USER).keys())
+        ops = []
         for e in ids:
             if e not in cur:
                 cur.append(e)
-        write_forcelist(cur)
+            if self.extset.get(e) in ("removed", "blocked"):
+                ops.append({"op": "del_extset", "id": e})
+        ops.insert(0, {"op": "write_forcelist", "ids": cur})
+        if not self._run_policy_ops(ops):
+            return
         self._persist_settings()
-        self.log(self.t("log_spread", len(ids)))
-        self._after()
+        summary = self.t("log_spread", len(ids))
+        self.log(summary)
+        self._after(summary)
 
     # -------------------------------------------------- 通道 B
 
@@ -2395,11 +3141,13 @@ class App:
             save_pool(self.pool)
             self.render_local()
             self.log(self.t("log_unpacked", p["id"]))
-            allow_local_sources()
-            self.log(self.t("log_allowed_src"))
         except Exception as e:
             self.log(self.t("log_unpack_err", e), "warn")
             messagebox.showwarning(self.t("dlg_unpack_err_title"), str(e))
+            return
+        if self._run_policy_ops([{"op": "allow_local_sources"}]):
+            self.log(self.t("log_allowed_src"))
+            self.refresh()
 
     def do_open_pages(self):
         sel = self.local_lb.curselection()
@@ -2407,7 +3155,8 @@ class App:
             messagebox.showinfo(self.t("dlg_need_title"), self.t("dlg_local_need_sel"))
             return
         p = self.pool[sel[0]]
-        allow_local_sources()
+        if not self._run_policy_ops([{"op": "allow_local_sources"}]):
+            return
         where = self.ext_map.get(p["id"], {}).get("where", {})
         missing = [(d, n) for d, n in self.profiles if d not in where]
         if not missing:
@@ -2454,6 +3203,9 @@ def _parse_lang_arg(argv):
 
 
 def main():
+    if _handle_apply_policy_cli(sys.argv[1:]):
+        return
+
     args = {a.lower() for a in sys.argv[1:]}
     force_bg = "--background" in args or "--minimized" in args
     force_show = "--show" in args
@@ -2464,6 +3216,7 @@ def main():
     if not hmutex:
         return
 
+    mutex_ref = [hmutex]
     try:
         try:
             ctypes.windll.shcore.SetProcessDpiAwareness(1)
@@ -2488,13 +3241,15 @@ def main():
             launched_by_autostart=launched_by_autostart,
             icon_path=icon_path,
             lang_override=lang_override,
+            mutex_ref=mutex_ref,
         )
         try:
             root.mainloop()
         finally:
             app.quit_app()
     finally:
-        kernel32.CloseHandle(hmutex)
+        if mutex_ref[0]:
+            kernel32.CloseHandle(mutex_ref[0])
 
 
 if __name__ == "__main__":

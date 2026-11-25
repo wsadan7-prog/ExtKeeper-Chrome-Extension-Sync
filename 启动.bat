@@ -1,6 +1,5 @@
 @echo off
 setlocal
-chcp 65001 >nul 2>&1
 
 set "PY=%LOCALAPPDATA%\Programs\Python\Python313\pythonw.exe"
 if exist "%PY%" goto run
@@ -15,9 +14,10 @@ for /f "delims=" %%i in ('where pyw.exe 2^>nul') do (
   exit /b 0
 )
 
-echo 未找到 pythonw.exe 或 pyw.exe，请先安装带 tkinter 的 Python 3。
+echo pythonw.exe / pyw.exe not found. Please install Python 3 (with tkinter).
 pause
 exit /b 1
 
 :run
 start "" "%PY%" "%~dp0extkeeper.pyw" %*
+exit /b 0
